@@ -27,6 +27,8 @@ const port = process.env.PORT || 8052;
 
 
 
+
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, '../frontend/src/uploads'),
    filename: (req, file, cb) => {
@@ -147,12 +149,12 @@ function authenticateJWT(req, res, next) {
   } 
 }
 
+// for load balancer
+app.use(express.static('public'));
 
-// For loadbalancer testing
-app.get('/', async (req, res) => {
-  return res.status(200).json({"Working":"good job!!"})
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', './index.html'));
 });
-
 
 
 
