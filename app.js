@@ -25,12 +25,6 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const port = process.env.PORT || 8052;
 
 
-app.get('/'), async (req, res) => {
-
-  return res.status(200).json({"Working":"good job!!"})
-
-}
-
 
 
 const storage = multer.diskStorage({
@@ -153,6 +147,11 @@ function authenticateJWT(req, res, next) {
   } 
 }
 
+
+// For loadbalancer testing
+app.get('/', async (req, res) => {
+  return res.status(200).json({"Working":"good job!!"})
+});
 
 
 
