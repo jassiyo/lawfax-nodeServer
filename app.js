@@ -18,6 +18,9 @@ app.use(express.json()); // Parse JSON bodies
 const fs = require('fs');
 app.use(express.json());
 const { createProxyMiddleware } = require('http-proxy-middleware');
+const Razorpay = require('razorpay');
+const dotenv = require('dotenv');
+dotenv.config();
 
 
 
@@ -71,6 +74,7 @@ function sendVerificationEmail(email, token) {
     }
   });
 }
+
 //forgot password
 function sendForgotPasswordEmail(email, token) {
   const verificationLink = `http://localhost:3000/reset-password/${token}`;
@@ -97,6 +101,13 @@ let db = new sqlite3.Database('./Db-data/judgments5.db', sqlite3.OPEN_READWRITE,
   }
   
   console.log('Connected to the SQLite database.');
+  // Promisified get method
+
+
+
+
+
+
   // Create the users table if it doesn't exist
   db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,13 +185,94 @@ app.post('/register', async (req, res) => {
         if (err) {
           return res.status(500).json({ error: err.message });
         }
+        const userId = this.lastID;
+        db.run('INSERT INTO wallets (user_id, balance) VALUES (?, ?)', [userId, 0], function(err) {
+            if (err) {
+                console.error('Error creating wallet:', err);
+                // Optionally handle the error, maybe roll back user creation or notify an admin
+                return res.status(500).json({ error: 'Failed to create wallet' });
+            }
         sendVerificationEmail(username, emailVerificationToken);
         res.json({ message: 'Registration successful. Please check your email to verify your account.' });
       });
+    }
+    );
+
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Internal server error' });
   }
+});
+app.post('/wallet/add-funds', authenticateJWT, async (req, res) => {
+  // Check if the user is admin
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { userId, amount } = req.body;
+  db.run('UPDATE wallets SET balance = balance + ? WHERE user_id = ?', [amount, userId], function(err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ message: 'Funds added successfully' });
+  });
+});
+
+let razorpayInstance = new Razorpay({
+  key_id: 'rzp_test_SJsbPFYVQOtlbi',   //process.env.RAZORPAY_KEY_ID
+  key_secret: 'pde3ZbrQ0YLWOps0GUHhQktB',// process.env.RAZORPAY_KEY_SECRET
+});
+app.post('/wallet/transfer-to-bank', authenticateJWT, async (req, res) => {
+  const { amount, accountNumber, accountName, ifsc } = req.body;
+  const userId = req.user.id;
+
+  // You might want to validate and convert the amount to the smallest currency unit, etc.
+  const payoutAmount = amount * 100; // Convert to paise
+
+  // Create the payout
+  const payout = {
+    // account_number: process.env.RAZORPAY_ACCOUNT_NUMBER,
+    fund_account: {
+      account_type: "bank_account",
+      bank_account: {
+        name: accountName,
+        account_number: accountNumber,
+        ifsc: ifsc,
+      },
+    },
+    amount: payoutAmount,
+    currency: "INR",
+    mode: "IMPS", // Choose the appropriate transfer mode
+    purpose: "payout",
+    description: "Wallet payout"
+  };
+
+  try {
+    const response = await razorpayInstance.payouts.create(payout);
+
+    // Here, update the wallet balance in your database accordingly
+    // Also, log this transaction in your wallet_transactions table
+
+    res.json({ success: true, payout: response });
+  } catch (error) {
+    console.error('Payout Error:', error);
+    res.status(500).json({ success: false, message: "Failed to initiate payout", error: error.message });
+  }
+});
+
+app.get('/wallet/balance', authenticateJWT, (req, res) => {
+  const userId = req.user.id; // Assuming the user's ID is stored in the JWT payload
+
+  db.get('SELECT id, balance FROM wallets WHERE user_id = ?', [userId], (err, row) => {
+      if (err) {
+          console.error('Database error:', err);
+          return res.status(500).json({ error: 'Internal Server Error' });
+      }
+
+      if (!row) {
+          return res.status(404).json({ error: 'Wallet not found' });
+      }
+
+      res.json({ balance: row.balance });
+  });
 });
 
 
@@ -222,6 +314,74 @@ app.post('/login', (req, res) => {
     res.json({ token });
   });
 });
+
+app.get('/profile', authenticateJWT, (req, res) => {
+  const userId = req.user.id;
+  
+  db.get('SELECT id,username, name, mobile, lawyerType, experience, age FROM users WHERE id = ?', [userId], (err, user) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+
+    // Check if the user exists
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.json(user);
+  });
+});
+app.patch('/profile/edit/update', authenticateJWT, (req, res) => {
+  console.log(req.body); 
+  const userId = req.user.id;
+  const { name, mobile, lawyerType, experience, age } = req.body;
+
+  // Ensure that at least one field is provided for update
+  if (!name && !mobile && !lawyerType && !experience && !age) {
+    return res.status(400).json({ error: 'At least one field must be provided for update' });
+  }
+
+  // Build the SET clause for the update query dynamically
+  const updateFields = [];
+  const updateValues = [];
+
+  if (name) {
+    updateFields.push('name = ?');
+    updateValues.push(name);
+  }
+  if (mobile) {
+    updateFields.push('mobile = ?');
+    updateValues.push(mobile);
+  }
+  if (lawyerType) {
+    updateFields.push('lawyerType = ?');
+    updateValues.push(lawyerType);
+  }
+  if (experience) {
+    updateFields.push('experience = ?');
+    updateValues.push(experience);
+  }
+  if (age) {
+    updateFields.push('age = ?');
+    updateValues.push(age);
+  }
+
+  const updateQuery = `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`;
+  const updateParams = [...updateValues, userId];
+
+  db.run(updateQuery, updateParams, function (err) {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'User not found or no changes made' });
+    }
+
+    return res.json({ message: 'Profile updated successfully' });
+  });
+});
+
 
 // Endpoint to initiate password reset
 app.post('/forgot-password', async (req, res) => {
@@ -1564,7 +1724,6 @@ app.get('/dashboard/updatecases/download-pdf/:caseId', authenticateJWT, async (r
   try {
     const { caseId } = req.params;
     const userId = req.user.id;
-
     // Check if the case with the given ID belongs to the authenticated user
     const caseData = await new Promise((resolve, reject) => {
       db.get(
@@ -2634,7 +2793,7 @@ app.get('/dashboard/user/notifications', authenticateJWT, (req, res) => {
 
   db.all(
     `
-    SELECT id, message, expirationDate FROM Notification WHERE user_id = ? AND date(expirationDate) >= date('now')
+    SELECT id, message, expirationDate FROM Notification WHERE user_id = ? AND date(expirationDate) >= date('now') AND type = 'general'
     `,
     [userId],
     (err, rows) => {
@@ -2657,7 +2816,10 @@ app.get('/dashboard/user/notifications', authenticateJWT, (req, res) => {
             timeLeftMessage = `${daysDifference} days left`;
           }
 
-          return `${timeLeftMessage}: ${row.message}`;
+          return {
+            id: row.id,
+            message: `${timeLeftMessage}: ${row.message}`,
+          };
         });
 
         console.log('Retrieved rows:', rows);
@@ -2694,36 +2856,98 @@ app.get('/dashboard/user/notifications/count', authenticateJWT, (req, res) => {
   });
 });
 
-app.delete('/dashboard/user/notifications/:id', authenticateJWT, (req, res) => {
-  const userId = req.user.id;
-  const notificationId = req.params.id;
+app.delete('/dashboard/user/notifications/:notificationId', authenticateJWT, async (req, res) => {
+  try {
+    const { notificationId } = req.params;
+    const userId = req.user.id;
 
-  // Delete the notification for the given id and user
-  db.run(`DELETE FROM Notification WHERE id = ? AND user_id = ?`, [notificationId, userId], (err) => {
-    if (err) {
-      console.error('Database error:', err);
-      return res.status(500).json({ error: 'Internal Server Error' });
+    // Check if the notification with the given ID belongs to the authenticated user
+    const notificationExists = await new Promise((resolve, reject) => {
+      db.get(`SELECT id FROM Notification WHERE id = ? AND user_id = ?`, [notificationId, userId], (err, row) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(row);
+        }
+      });
+    });
+
+    if (!notificationExists) {
+      return res.status(404).json({ error: 'Notification not found' });
     }
-    res.json({ message: 'Notification deleted successfully' });
+
+    // Delete the notification with the given ID
+    await new Promise((resolve, reject) => {
+      db.run(`DELETE FROM Notification WHERE id = ?`, [notificationId], (err) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    return res.json({ message: 'Notification deleted successfully' });
+  } catch (error) {
+    console.error('Database error:', error);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+const getAsync = (sql, params) => new Promise((resolve, reject) => {
+  db.get(sql, params, (err, row) => {
+    if (err) reject(err);
+    else resolve(row);
   });
 });
 
+// Promisified run method
+const runAsync = (sql, params) => new Promise((resolve, reject) => {
+  db.run(sql, params, function(err) {
+    if (err) reject(err);
+    else resolve(this);
+  });
+});
 
 // notifications for proxy
 app.post('/proxy', authenticateJWT, async (req, res) => {
-  const userId = req.user.id;
-  const currentDate = new Date().toISOString();
-  const expirationDate = new Date(req.body.dateOfHearing).toISOString();
+  const userId = req.user.id; // Extracting user ID from JWT authentication
 
-  try {
-    const {
+  // Extracting data from request body
+  const {
+    lawyerType,
+    experience,
+    age,
+    streetAddress,
+    city,
+    zipStateProvince,
+    zipPostalCode,
+    date,
+    caseDescription,
+    causeTitle,
+    honorableJudge,
+    courtNumber,
+    type,
+    timeOfHearing,
+    dateOfHearing,
+    comments
+  } = req.body;
+
+  // Calculating expirationDate based on dateOfHearing
+  const expirationDate = new Date(dateOfHearing).toISOString();
+
+  // SQL query to insert proxy form data
+  const insertProxySQL = `
+    INSERT INTO ProxyForm (
       lawyerType,
+      experience,
+      age,
       streetAddress,
       city,
       zipStateProvince,
       zipPostalCode,
       date,
-      case: caseDescription,
+      caseDescription,
       causeTitle,
       honorableJudge,
       courtNumber,
@@ -2731,270 +2955,227 @@ app.post('/proxy', authenticateJWT, async (req, res) => {
       timeOfHearing,
       dateOfHearing,
       comments,
-    } = req.body;
+      user_id,
+      expirationDate
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-    // Insert proxy into ProxyForm table
-    db.run(
-      `INSERT INTO ProxyForm (
-        lawyerType,
-        streetAddress,
-        city,
-        zipStateProvince,
-        zipPostalCode,
-        date,
-        caseDescription,
-        causeTitle,
-        honorableJudge,
-        courtNumber,
-        type,
-        timeOfHearing,
-        dateOfHearing,
-        comments,
-        user_id,
-        expirationDate
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        lawyerType,
-        streetAddress,
-        city,
-        zipStateProvince,
-        zipPostalCode,
-        date,
-        caseDescription,
-        causeTitle,
-        honorableJudge,
-        courtNumber,
-        type,
-        timeOfHearing,
-        dateOfHearing,
-        comments,
-        userId,
+  try {
+    // Inserting proxy form data into the database
+    const result = await runAsync(insertProxySQL, [
+      lawyerType,
+      experience,
+      age,
+      streetAddress,
+      city,
+      zipStateProvince,
+      zipPostalCode,
+      date,
+      caseDescription,
+      causeTitle,
+      honorableJudge,
+      courtNumber,
+      type,
+      timeOfHearing,
+      dateOfHearing,
+      comments,
+      userId,
+      expirationDate
+    ]);
+
+    const proxyId = result.lastID; // Retrieve the last inserted ID for the proxy
+
+    console.log('Proxy form data inserted successfully. Proxy ID:', proxyId);
+
+    // Fetch all user IDs except the current user's
+    const allUserIds = await new Promise((resolve, reject) => {
+      db.all(`SELECT id FROM users WHERE id != ?`, [userId], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows.map(row => row.id));
+      });
+    });
+
+    // Constructing the notification message
+    const createdByUser = await new Promise((resolve, reject) => {
+      db.get('SELECT name FROM users WHERE id = ?', [userId], (err, row) => {
+        if (err) reject(err);
+        else resolve(row.name); // Assuming the user has a 'name' column
+      });
+    });
+    const notificationMessage = `A new proxy has been generated by ${createdByUser}. Need a ${lawyerType} lawyer with ${experience} years of experience and around ${age} years old. The hearing date is on ${dateOfHearing} in ${city}, ${zipStateProvince}.`;
+
+    // Inserting notification for each user except the creator
+    for (const id of allUserIds) {
+      await runAsync('INSERT INTO Notification (user_id, message, expirationDate, type, proxy_id) VALUES (?, ?, ?, ?, ?)', [
+        id,
+        notificationMessage,
         expirationDate,
-      ],
-      function (err) {
-        if (err) {
-          console.error('Database error:', err);
-          return res.status(500).json({ error: 'Internal Server Error' });
-        }
+        'proxy',
+        proxyId
+      ]);
+    }
 
-        // Notify all other users except the one who created the proxy
-        // db.all(
-        //   'SELECT id FROM users WHERE id != ?',
-        //   [userId],
-        //   (err, users) => {
-        //     if (err) {
-        //       console.error('Database error:', err);
-        //     } else {
-        //       users.forEach((user) => {
-        //         const notificationMessage = `A new proxy has been generated by user ${req.user.username} for a hearing on ${req.body.dateOfHearing}`;
-        //         db.run(
-        //           'INSERT INTO Notification (userId, message, expirationDate, proxyId) VALUES (?, ?, ?, ?)',
-        //           [user.id, notificationMessage, expirationDate, proxyId],
-        //           (err) => {
-        //             if (err) {
-        //               console.error('Database error:', err);
-        //             }
-        //           }
-        //         );
-        //       });
-        //     }
-        //   }
-        // );
-
-        return res.status(201).json({ message: 'Proxy created successfully' });
-      }
-    );
+    console.log('Notifications inserted successfully for all users except the creator');
+    res.status(201).json({ message: 'Proxy created successfully', notification: notificationMessage });
   } catch (error) {
-    console.error('Processing error:', error);
-    return res.status(500).json({ error: 'Internal Server Error' });
+    console.error('Error in /proxy endpoint:', error);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
   }
 });
 
 
 
-app.get("/dashboard/user/proxy-notifications", authenticateJWT, (req, res) => {
+app.get('/dashboard/user/proxy-notifications', authenticateJWT, (req, res) => {
   const userId = req.user.id;
-  console.log(userId)
-  const currentDate = new Date().toISOString();
 
-  db.all(
-    'SELECT id, fullName, dateOfHearing, expirationDate, status, zipStateProvince, city FROM ProxyForm WHERE user_id != ? AND expirationDate > ? AND status = "pending"',
-    [userId, currentDate],
-    (err, rows) => {
-      if (err) {
-        console.error("Database error:", err);
-        return res.status(500).json({ error: "Internal Server Error" });
-      }
+  // Adjusted query to exclude finalized proxies
+  const query = `
+    SELECT n.id, n.message, n.expirationDate, n.proxy_id
+    FROM Notification n
+    JOIN ProxyForm pf ON n.proxy_id = pf.id
+    WHERE n.user_id = ? AND date(n.expirationDate) >= date('now') AND n.type = 'proxy' AND pf.status != 'finalized'
+  `;
 
-      try {
-        const notifications = rows.map((row) => {
-          const { fullName, dateOfHearing, zipStateProvince, city, id } = row;
-          return{id:id, message:`The proxy has been generated by ${fullName}. The date of hearing is ${dateOfHearing} in state ${zipStateProvince} City - ${city}`};
-        });
-        // return `The proxy has been generated by ${fullName}. The date of hearing is ${dateOfHearing} in state ${zipStateProvince} City - ${city}`;
-
-        console.log(notifications)
-        return res.json(notifications);
-      } catch (error) {
-
-        console.error("Processing error:", error);
-        return res.status(500).json({ error: "Internal Server Error" });
-      }
+  db.all(query, [userId], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
     }
-  );
+
+    return res.json(rows.map(row => ({
+      ...row,
+      proxyId: row.proxy_id
+    })));
+  });
 });
 
-app.post('/dashboard/user/accept-proxy/:proxyId', authenticateJWT, (req, res) => {
-  const userId = req.user.id;
+
+
+
+
+
+app.post('/dashboard/user/accept-proxy/:proxyId', authenticateJWT, async (req, res) => {
+  console.log(`Accepting proxy with ID: ${req.params.proxyId}`);
+  const userId = req.user.id; // From JWT authentication
   const proxyId = req.params.proxyId;
 
-  // Update the status of the proxy to "accepted" and set the acceptance date
-  const acceptanceDate = new Date().toLocaleDateString('en-GB', {
-    day: '2-digit',
-    month: '2-digit',
-    year: '2-digit',
+  try {
+    // Check if the proxy exists and is pending
+    const proxy = await getAsync('SELECT * FROM ProxyForm WHERE id = ?', [proxyId]);
+    if (!proxy) {
+      return res.status(404).json({ error: 'Proxy not found' });
+    }
+
+    // Insert acceptance record
+    const currentDate = new Date().toISOString();
+    await runAsync('INSERT INTO ProxyAcceptance (proxy_id, user_id, acceptanceDate) VALUES (?, ?, ?)', [proxyId, userId, currentDate]);
+    await runAsync('DELETE FROM Notification WHERE proxy_id = ? AND user_id = ?', [proxyId, userId]);
+    
+
+    // Fetch user details
+    const user = await getAsync('SELECT * FROM users WHERE id = ?', [userId]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Construct the notification message
+    const notificationMessage = `${user.name} has accepted your proxy for hearing date ${proxy.dateOfHearing}.He is a ${user.lawyerType} , ${user.age} years old and having ${user.experience} years of experience. You can contact me through email-${user.username} or by mobile-${user.mobile} `;
+
+    // Insert the notification for the proxy creator
+    await runAsync('INSERT INTO Notification (user_id, message, expirationDate, type, proxy_id, acceptorId) VALUES (?, ?, ?, ?, ?, ?)', [proxy.user_id, notificationMessage, proxy.expirationDate, 'proxy-accepted', proxy.id, userId]);
+
+    res.status(201).json({ message: 'Proxy accepted successfully', notificationMessage });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
+  }
+});
+
+
+app.get('/dashboard/user/proxy-notifications-accepted', authenticateJWT, (req, res) => {
+  const userId = req.user.id; // Extracting user ID from JWT authentication
+
+  db.all(`
+    SELECT 
+      n.id AS notificationId, 
+      n.message, 
+      n.expirationDate, 
+      n.proxy_id AS proxyId, 
+      n.acceptorId
+    FROM Notification n
+    JOIN ProxyForm pf ON n.proxy_id = pf.id AND pf.user_id = ?
+    WHERE 
+      n.expirationDate >= date('now') 
+      AND n.type = 'proxy-accepted'
+    ORDER BY n.proxy_id, n.id
+  `, [userId], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+
+    res.json(rows);
   });
-
-  db.get(
-    'SELECT dateOfHearing, zipStateProvince, type, user_id AS creator_user_id FROM ProxyForm WHERE id = ? AND user_id != ? AND status = "pending"',
-    [proxyId, userId],
-    (err, proxyData) => {
-      if (err) {
-        console.error('Database error:', err);
-        return res.status(500).json({ error: 'Internal Server Error' });
-      }
-
-      if (!proxyData) {
-        // Proxy not found or not pending, handle accordingly
-        return res.status(404).json({ error: 'Proxy not found or not pending' });
-      }
-
-      const { dateOfHearing, zipStateProvince, type, creator_user_id } = proxyData;
-
-      // Update the status and acceptance date in ProxyForm table
-      db.run(
-        'UPDATE ProxyForm SET status = "accepted", acceptanceDate = ? WHERE id = ? AND user_id != ? AND status = "pending"',
-        [acceptanceDate, proxyId, userId],
-        (err) => {
-          if (err) {
-            console.error('Database error:', err);
-            return res.status(500).json({ error: 'Internal Server Error' });
-          }
-
-          // Record proxy activity in ProxyActivity table
-          db.run(
-            'INSERT INTO ProxyActivity (creator_user_id, acceptor_user_id, proxy_id, acceptanceDate, hearingDate, zipStateProvince, type) VALUES ( ?, ?, ?, ?, ?, ?, ?)',
-            [creator_user_id, userId, proxyId, acceptanceDate, dateOfHearing, zipStateProvince, type ], // Include hearing date here
-            (err) => {
-              if (err) {
-                console.error('Database error:', err);
-              }
-
-              // Retrieve the creator's user_id, fullName, dateOfHearing, and expirationDate from the ProxyForm table
-              db.get(
-                'SELECT user_id, fullName, dateOfHearing, expirationDate, zipStateProvince, city FROM ProxyForm WHERE id = ?',
-                [proxyId],
-                (err, row) => {
-                  if (err) {
-                    console.error('Database error:', err);
-                  } else {
-                    if (row.user_id) {
-                      // Notify the user who created the proxy
-                      const creatorNotificationMessage = `Your proxy for the hearing on ${row.dateOfHearing} in state ${row.zipStateProvince}, City ${row.city} has been accepted by user ${req.user.username}`;
-
-                      db.run(
-                        'INSERT INTO Notification (userId, message, expirationDate) VALUES (?, ?, ?)',
-                        [row.user_id, creatorNotificationMessage, row.expirationDate],
-                        (err) => {
-                          if (err) {
-                            console.error('Database error:', err);
-                          }
-                        }
-                      );
-                    }
-                  }
-                }
-              );
-
-              return res.json({ message: 'Proxy accepted successfully' });
-            }
-          );
-        }
-      );
-    }
-  );
 });
 
 
-app.get('/dashboard/user/accepted-proxy-notifications', authenticateJWT, (req, res) => {
-  const userId = req.user.id;
-  const currentDate = new Date().toISOString();
 
-  db.all(
-    'SELECT message, expirationDate FROM Notification WHERE userId = ? AND expirationDate > ?',
-    [userId, currentDate],
-    (err, rows) => {
-      if (err) {
-        console.error('Database error:', err);
-        return res.status(500).json({ error: 'Internal Server Error' });
-      }
 
-      try {
-        const notifications = rows.map((row) => {
-          return row.message;
-        });
 
-        return res.json(notifications);
-      } catch (error) {
-        console.error('Processing error:', error);
-        return res.status(500).json({ error: 'Internal Server Error' });
-      }
+
+app.post('/dashboard/user/choose-acceptor/:proxyId/:acceptorId', authenticateJWT, async (req, res) => {
+  console.log("params", req.params)
+  const userId = req.user.id; // ID of the user making the request, should be the creator of the proxy
+  const { proxyId, acceptorId } = req.params;
+  const { paymentId } = req.body; 
+
+  try {
+    // Use the promisified getAsync to verify the requester is the creator of the proxy
+    const proxy = await getAsync('SELECT * FROM ProxyForm WHERE id = ? AND user_id = ?', [proxyId, userId]);
+    if (!proxy) {
+      return res.status(404).json({ error: 'Proxy not found or you do not have permission to finalize this proxy.' });
     }
-  );
+
+
+
+    await runAsync('UPDATE ProxyForm SET paymentId = ?, payment_status = ? WHERE id = ?', [paymentId, 'successful', proxyId]);
+
+    // The rest of your logic to handle acceptor choice...
+    // Ensure to check if a valid acceptorId is provided and matches the expected criteria
+
+    
+
+    const acceptance = await getAsync('SELECT * FROM ProxyAcceptance WHERE proxy_id = ? AND user_id = ?', [proxyId, acceptorId]);
+    if (!acceptance) {
+      return res.status(400).json({ error: 'The chosen acceptor does not match any proxy acceptance record.' });
+    }
+
+
+    // Use the promisified runAsync to update ProxyForm status to "finalized"
+    const currentDate = new Date().toISOString().split('T')[0];
+
+    // Use the promisified runAsync to update ProxyForm status to "finalized" and set the acceptanceDate
+    await runAsync('UPDATE ProxyForm SET status = "finalized", acceptanceDate = ?, accepted_by_user_id = ? WHERE id = ?', [currentDate, acceptorId, proxyId]);
+    await runAsync('DELETE FROM Notification WHERE proxy_id = ? AND user_id = ?', [proxyId, userId]);
+    // Fetch the creator's details to include in the notification
+    const creator = await getAsync('SELECT * FROM users WHERE id = ?', [userId]);
+    if (!creator) {
+      return res.status(404).json({ error: 'Creator user not found.' });
+    }
+
+    // Correcting the logic: Construct and send a notification message to the acceptor, indicating the creator has finalized their acceptance
+    const notificationMessageForAcceptor = `Your request to accept the proxy for hearing date ${proxy.dateOfHearing} has been successfully accepted by ${creator.name}. You may contact them by email ${creator.username} or mobile ${creator.mobile}.`;
+
+    // Ensure the notification is sent to the acceptor
+    await runAsync('INSERT INTO Notification (user_id, message, expirationDate, proxy_id) VALUES (?, ?, ?, ?)', [acceptorId, notificationMessageForAcceptor, proxy.expirationDate , proxy.id]);
+
+    res.json({ message: 'Acceptor chosen successfully, notifications sent.' });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 });
 
 
-app.delete('/dashboard/user/notifications/:notificationId', authenticateJWT, (req, res) => {
-  const userId = req.user.id;
-  const notificationId = req.params.notificationId;
-  console.log('Notification ID to delete:', notificationId);
-
-  // Check if the notification belongs to the authenticated user and has 'visible' status
-  db.get(
-    'SELECT * FROM Notification WHERE id = ? AND userId = ? AND status = "Visible"',
-    [notificationId, userId],
-    (err, notification) => {
-      if (err) {
-        console.error('Database error:', err);
-        return res.status(500).json({ error: 'Internal Server Error' });
-        
-      }
-      console.log('Notification:', notification);
-
-      if (!notification) {
-        // If the notification doesn't exist, doesn't belong to the user, or is already deleted, return a 404 error
-        return res.status(404).json({ error: 'Notification not found' });
-      }
-
-      // Update the status of the notification to 'deleted'
-      db.run(
-        'UPDATE Notification SET status = "deleted" WHERE id = ?',
-        [notificationId],
-        (err) => {
-          if (err) {
-            console.error('Database error:', err);
-            return res.status(500).json({ error: 'Internal Server Error' });
-          }
-
-          console.log('Notification marked as deleted.');
-          return res.status(204).end(); // Respond with a 204 status code (No Content) to indicate successful update
-        }
-      );
-    }
-  );
-});
-// show proxy
-// Endpoint for retrieving proxy activity for the logged-in user
 // show proxy
 // Endpoint for retrieving proxy activity for the logged-in user
 app.get('/dashboard/user/proxy-activity', authenticateJWT, (req, res) => {
@@ -3002,10 +3183,19 @@ app.get('/dashboard/user/proxy-activity', authenticateJWT, (req, res) => {
   const currentDate = new Date().toISOString();
 
   db.all(
-    'SELECT pa.id, pa.acceptanceDate, pa.hearingDate, pa.zipStateProvince, pa.type, p.fullName AS creatorFullName, u.username AS acceptorUsername FROM ProxyActivity pa ' +
-    'INNER JOIN users u ON pa.acceptor_user_id = u.id ' +
-    'INNER JOIN ProxyForm p ON pa.proxy_id = p.id ' +
-    'WHERE pa.creator_user_id = ? AND p.expirationDate > ?',
+    `SELECT 
+        pa.id, 
+        pa.acceptanceDate, 
+        pa.hearingDate, 
+        pa.zipStateProvince, 
+        pa.type, 
+        creator.name AS creatorFullName,  -- Adjusted to fetch creator's full name
+        acceptor.name AS acceptorFullName -- Adjusted for clarity and consistency
+     FROM ProxyActivity pa
+     INNER JOIN users acceptor ON pa.acceptor_user_id = acceptor.id -- Join for acceptor
+     INNER JOIN users creator ON pa.creator_user_id = creator.id -- Join for creator
+     INNER JOIN ProxyForm p ON pa.proxy_id = p.id
+     WHERE pa.creator_user_id = ? AND p.expirationDate > ?`,
     [userId, currentDate],
     (err, rows) => {
       if (err) {
@@ -3021,8 +3211,8 @@ app.get('/dashboard/user/proxy-activity', authenticateJWT, (req, res) => {
             hearingDate: row.hearingDate,
             zipStateProvince: row.zipStateProvince,
             type: row.type,
-            creatorFullName: row.creatorFullName,
-            acceptorUsername: row.acceptorUsername,
+            creatorFullName: row.creatorFullName, // Reflects the creator's full name
+            acceptorFullName: row.acceptorFullName, // Reflects the acceptor's full name
           };
         });
 
@@ -3034,6 +3224,7 @@ app.get('/dashboard/user/proxy-activity', authenticateJWT, (req, res) => {
     }
   );
 });
+
 
 
 // Endpoint for deleting proxy activity for the logged-in user
