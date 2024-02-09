@@ -7,6 +7,7 @@ const bcrypt = require('bcrypt');
 const secretKey = 'your_secret_key';
 const ejs = require('ejs');
 const pdf = require('html-pdf');
+const puppeteer = require('puppeteer');
 const fetch = require('node-fetch');
 const FormData = require('form-data');
 const nodemailer = require('nodemailer');
@@ -26,11 +27,6 @@ dotenv.config();
 
 // const { Storage } = require('@google-cloud/storage');
 const port = process.env.PORT || 8052;
-
-
-
-
-
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, '../frontend/src/uploads'),
@@ -995,6 +991,80 @@ app.delete('/alerts/:alertId', authenticateJWT, async (req, res) => {
 });
 
 // Download alert PDF by ID
+// app.get('/alerts/download-pdf/:alertId', authenticateJWT, async (req, res) => {
+//   try {
+//     const { alertId } = req.params;
+
+//     // Check if the alert with the given ID belongs to the authenticated user
+//     const alertData = await new Promise((resolve, reject) => {
+//       db.get(
+//         'SELECT * FROM AlertsForm WHERE id = ? AND user_id = ?',
+//         [alertId, req.user.id],
+//         (err, row) => {
+//           if (err) {
+//             reject(err);
+//           } else {
+//             resolve(row);
+//           }
+//         }
+//       );
+//     });
+
+//     if (!alertData) {
+//       return res.status(404).json({ error: 'Alert not found' });
+//     }
+
+//     // Define an HTML template for your PDF content (you can use a template engine like EJS)
+//     const template = `
+//     <html>
+//     <head>
+//       <title>Alert Data</title>
+//       <style>
+      
+//     </style>
+//     </head>
+//     <body>
+//       <h1>Alert Data</h1>
+//       <p>Title: <%= title %></p>
+//       <p>Case Title: <%= caseTitle %></p>
+//       <p>Case Type: <%= caseType %></p>
+//       <p>Start Date: <%= startDate %></p>
+//       <p>Completion Date: <%= completionDate %></p>
+//       <p>Assign From: <%= assignFrom %></p>
+//       <p>Assign To: <%= assignTo %></p>
+      
+      
+      
+//       <!-- Add more fields as needed -->
+//     </body>
+//   </html>
+  
+//     `;
+
+//     // Compile the template with data
+//     const htmlContent = ejs.render(template, alertData);
+
+//     // Create a PDF from the HTML content
+//     pdf.create(htmlContent).toStream((err, stream) => {
+//       if (err) {
+//         console.error(err);
+//         return res.status(500).json({ error: 'Error generating PDF' });
+//       }
+
+//       // Set the response headers for PDF download
+//       res.setHeader('Content-Type', 'application/pdf');
+//       res.setHeader('Content-Disposition', `attachment; filename=Alert_${alertData.id}.pdf`);
+
+//       // Pipe the PDF stream to the response
+//       stream.pipe(res);
+//     });
+//   } catch (error) {
+//     console.error(error);
+//     return res.status(500).json({ error: 'Internal Server Error' });
+//   }
+// });
+
+
 app.get('/alerts/download-pdf/:alertId', authenticateJWT, async (req, res) => {
   try {
     const { alertId } = req.params;
@@ -1018,14 +1088,17 @@ app.get('/alerts/download-pdf/:alertId', authenticateJWT, async (req, res) => {
       return res.status(404).json({ error: 'Alert not found' });
     }
 
-    // Define an HTML template for your PDF content (you can use a template engine like EJS)
+    // Assuming you are using ejs for templating
+    const ejs = require("ejs");
+
+    // Define your HTML template
     const template = `
     <html>
     <head>
       <title>Alert Data</title>
       <style>
-      
-    </style>
+      /* Your CSS here */
+      </style>
     </head>
     <body>
       <h1>Alert Data</h1>
@@ -1036,32 +1109,32 @@ app.get('/alerts/download-pdf/:alertId', authenticateJWT, async (req, res) => {
       <p>Completion Date: <%= completionDate %></p>
       <p>Assign From: <%= assignFrom %></p>
       <p>Assign To: <%= assignTo %></p>
-      
-      
-      
       <!-- Add more fields as needed -->
     </body>
-  </html>
-  
+    </html>
     `;
 
     // Compile the template with data
     const htmlContent = ejs.render(template, alertData);
 
-    // Create a PDF from the HTML content
-    pdf.create(htmlContent).toStream((err, stream) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Error generating PDF' });
-      }
+    // Launch Puppeteer
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
+    await page.setContent(htmlContent);
 
-      // Set the response headers for PDF download
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=Alert_${alertData.id}.pdf`);
+    // Generate PDF from the page content
+    const pdfBuffer = await page.pdf({ format: 'A4' });
 
-      // Pipe the PDF stream to the response
-      stream.pipe(res);
-    });
+    // Close the browser
+    await browser.close();
+
+    // Set the response headers for PDF download
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=Alert_${alertData.id}.pdf`);
+
+    // Send the PDF buffer to the client
+    res.send(pdfBuffer);
+
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: 'Internal Server Error' });
