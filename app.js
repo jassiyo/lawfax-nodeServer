@@ -18,7 +18,7 @@ app.use(cors()); // Enable CORS for all routes
 app.use(express.json()); // Parse JSON bodies
 const fs = require('fs');
 app.use(express.json());
-const { createProxyMiddleware } = require('http-proxy-middleware');
+const { createProxyMiddleware } = require('https-proxy-middleware');
 const Razorpay = require('razorpay');
 const dotenv = require('dotenv');
 dotenv.config();
@@ -39,7 +39,6 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
-
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   host: 'smtp.gmail.com',
@@ -56,7 +55,7 @@ const transporter = nodemailer.createTransport({
 
 //verification of user email
 function sendVerificationEmail(email, token) {
-  const verificationLink = `http://localhost:3000/verifyemail/${token}`;
+  const verificationLink = `https://lawfax.in/verifyemail/${token}`;
   const mailOptions = {
     from: 'nupurgarg8792@gmail.com',
     to: email,
@@ -74,7 +73,7 @@ function sendVerificationEmail(email, token) {
 
 //forgot password
 function sendForgotPasswordEmail(email, token) {
-  const verificationLink = `http://localhost:3000/reset-password/${token}`;
+  const verificationLink = `https://lawfax.in/reset-password/${token}`;
     const mailOptions = {
       from: 'nupurgarg8792@gmail.com',
       to: email,
@@ -177,7 +176,7 @@ app.post('/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const emailVerificationToken = crypto.randomBytes(20).toString('hex');
 
-    db.run('INSERT INTO users (name, lawyerType, experience, age, mobile, username, hashed_password, email_verification_token) VALUES (?,?,?,?, ?, ?, ?, ?)', 
+    db.run('INSERT INTO users (name, lawyerType, experience, age, mobile, username, hashed_password, email_verification_token) VALUES (?,?,?,?, ?, ?, ?, ?)',
       [name, lawyerType, experience, age, mobile, username, hashedPassword, emailVerificationToken], function (err) {
         if (err) {
           return res.status(500).json({ error: err.message });
@@ -341,7 +340,6 @@ app.patch('/profile/edit/update', authenticateJWT, (req, res) => {
   // Build the SET clause for the update query dynamically
   const updateFields = [];
   const updateValues = [];
-
   if (name) {
     updateFields.push('name = ?');
     updateValues.push(name);
@@ -365,16 +363,13 @@ app.patch('/profile/edit/update', authenticateJWT, (req, res) => {
 
   const updateQuery = `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`;
   const updateParams = [...updateValues, userId];
-
   db.run(updateQuery, updateParams, function (err) {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
-
     if (this.changes === 0) {
       return res.status(404).json({ error: 'User not found or no changes made' });
     }
-
     return res.json({ message: 'Profile updated successfully' });
   });
 });
@@ -400,7 +395,7 @@ app.post('/forgot-password', async (req, res) => {
       return res.status(404).json({ error: 'Email not found' });
     }
 
-    // const resetLink = `http://localhost:3000/reset-password/${token}`;
+    // const resetLink = `https://lawfax.in/reset-password/${token}`;
     // Send email with resetLink here using your sendVerificationEmail function or similar
     sendForgotPasswordEmail(email,  token);
 
