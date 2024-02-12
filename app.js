@@ -43,16 +43,17 @@ const upload = multer({ storage: storage });
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   host: 'smtp.gmail.com',
-   port: 587,
+  //  port: 587,
   //  port: process.env.PORT || 587,
-   secure: false, // use TLS
-  // port: process.env.PORT || 465,
-  // secure: true,
+  //  secure: false, 
+  port: process.env.PORT || 465,
+  secure: true,
   auth: {
     user: 'nupurgarg8792@gmail.com',
     pass: 'zaal owwv ivsn ctht'
   }
 });
+
 //verification of user email
 function sendVerificationEmail(email, token) {
   const verificationLink = `http://localhost:3000/verifyemail/${token}`;
