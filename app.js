@@ -7,29 +7,35 @@ const bcrypt = require('bcrypt');
 const secretKey = 'your_secret_key';
 const ejs = require('ejs');
 const pdf = require('html-pdf');
-const puppeteer = require('puppeteer');
+// const puppeteer = require('puppeteer');
 const fetch = require('node-fetch');
 const FormData = require('form-data');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const multer = require('multer');
 const path = require('path');
+// const PDFParse = require('pdf-parse');
+const PDFDocument = require('pdfkit');
 app.use(cors()); // Enable CORS for all routes
 app.use(express.json()); // Parse JSON bodies
 const fs = require('fs');
 app.use(express.json());
-const { createProxyMiddleware } = require('https-proxy-middleware');
 const Razorpay = require('razorpay');
 const dotenv = require('dotenv');
+const axios = require('axios');
+const http = require('http');
+const socketIo = require('socket.io');
 dotenv.config();
-
-
 
 // const { Storage } = require('@google-cloud/storage');
 const port = process.env.PORT || 8052;
+const razorpayAuth = {
+  username: process.env.RAZORPAY_KEY_ID,
+  password: process.env.RAZORPAY_KEY_SECRET,
+};
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, '../frontend/src/uploads'),
+  destination: (req, file, cb) => cb(null, './Db-data/uploads'),
    filename: (req, file, cb) => {
     // Use Date.now() to get a unique timestamp and append the original filename
     const uniqueSuffix = Date.now() + '-' + file.originalname;
@@ -42,22 +48,24 @@ const upload = multer({ storage: storage });
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   host: 'smtp.gmail.com',
-  //  port: 587,
+   port: 587,
   //  port: process.env.PORT || 587,
-  //  secure: false, 
-  port: process.env.PORT || 465,
-  secure: true,
+   secure: false, 
+  // port: process.env.PORT || 465,
+  // secure: true,
   auth: {
-    user: 'nupurgarg8792@gmail.com',
-    pass: 'zaal owwv ivsn ctht'
+    user: 'lawfax23@gmail.com',
+    pass: 'ahgo nnym gsvu ipxq'
+    // user: 'nupurgarg8792@gmail.com',
+    // pass: 'zaal owwv ivsn ctht'
   }
 });
 
 //verification of user email
 function sendVerificationEmail(email, token) {
-  const verificationLink = `https://lawfax.in/verifyemail/${token}`;
+  const verificationLink = `http://localhost:3000/verifyemail/${token}`;
   const mailOptions = {
-    from: 'nupurgarg8792@gmail.com',
+    from: 'lawfax23@gmail.com',
     to: email,
     subject: 'Verify Your Email',
     html: `<p>Click <a href="${verificationLink}">here</a> to verify your email.</p>`
@@ -73,9 +81,10 @@ function sendVerificationEmail(email, token) {
 
 //forgot password
 function sendForgotPasswordEmail(email, token) {
-  const verificationLink = `https://lawfax.in/reset-password/${token}`;
+  const verificationLink = `http://localhost:3000/reset-password/${token}`;
     const mailOptions = {
-      from: 'nupurgarg8792@gmail.com',
+      from: 'lawfax23@gmail.com',
+      from: 'lawfax23@gmail.com',
       to: email,
       subject: 'Reset Your Password',
       html: `<p>Click <a href="${verificationLink}">here</a> to reset your password</p>`
@@ -99,11 +108,6 @@ let db = new sqlite3.Database('./Db-data/judgments5.db', sqlite3.OPEN_READWRITE,
   console.log('Connected to the SQLite database.');
   // Promisified get method
 
-
-
-
-
-
   // Create the users table if it doesn't exist
   db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +118,7 @@ let db = new sqlite3.Database('./Db-data/judgments5.db', sqlite3.OPEN_READWRITE,
     age TEXT,
     mobile TEXT UNIQUE,  
     hashed_password TEXT NOT NULL,
+    avatar_url TEXT,
     is_verified BOOLEAN DEFAULT 0,
     email_verification_token TEXT,
     resetPasswordToken TEXT,       
@@ -128,17 +133,119 @@ let db = new sqlite3.Database('./Db-data/judgments5.db', sqlite3.OPEN_READWRITE,
     
     console.log('Table "users" ensured.');
   });
+  
 });
 
 
 // Middleware for parsing JSON bodies and enabling CORS
+const checkAccess = (req, res, next) => {
+  const userId = req.user.id; // Assuming you're extracting this from JWT token
+
+  db.get('SELECT trial_start_date, subscription_end_date FROM users WHERE id = ?', [userId], (err, user) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Normalize today's date to start of day for comparison
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let isAccessAllowed = false;
+
+    let trialEndDate = user.trial_start_date ? new Date(user.trial_start_date) : null;
+    if (trialEndDate) {
+      trialEndDate.setDate(trialEndDate.getDate() + 15);
+      trialEndDate.setHours(0, 0, 0, 0); // Normalize trial end date
+      if (today <= trialEndDate) {
+        isAccessAllowed = true;
+      }
+    }
+
+    let subscriptionEndDate = user.subscription_end_date ? new Date(user.subscription_end_date) : null;
+    if (subscriptionEndDate) {
+      subscriptionEndDate.setHours(0, 0, 0, 0); // Normalize subscription end date
+      if (today <= subscriptionEndDate) {
+        isAccessAllowed = true;
+      }
+    }
+
+    // Proceed to next middleware if access is allowed
+    if (isAccessAllowed) {
+      next();
+    } else {
+      return res.status(403).json({ message: "Access denied. Please subscribe to continue." });
+    }
+  });
+};
+
+const sendEmail = (to, subject, text, callback) => {
+  const mailOptions = {
+    from: 'lawfax23@gmail.com',
+    to: to,
+    subject: subject,
+    text: text,
+  };
+
+  transporter.sendMail(mailOptions, function(error, info){
+    if (error) {
+      console.log(error);
+    } else {
+      console.log('Email sent: ' + info.response);
+    }
+    callback(error, info);
+  });
+};
+
+const checkAndSendNotifications = () => {
+  const today = new Date().toISOString().split('T')[0];
+  const query = `
+    SELECT n.id, n.user_id, n.message, n.expirationDate, u.username as userEmail 
+    FROM Notification n
+    JOIN users u ON n.user_id = u.id
+    WHERE n.emailed = 0 AND date(n.expirationDate) >= date('now')
+    AND u.emailNoti = 1
+    AND (
+      (date(u.trial_start_date, '+15 days') >= date('${today}') OR
+      date(u.subscription_end_date) >= date('${today}'))
+    )
+  `;
+
+  db.all(query, [], (err, notifications) => {
+    if (err) {
+      console.error('Database error:', err);
+      return;
+    }
+
+    notifications.forEach(notification => {
+      const emailSubject = 'Notification from LawFax';
+      const emailBody = notification.message ;
+
+      // Send an email for each notification
+      sendEmail(notification.userEmail, emailSubject, emailBody, () => {
+        // Update the notification as emailed
+        db.run(`UPDATE Notification SET emailed = 1 WHERE id = ?`, [notification.id], (updateErr) => {
+          if (updateErr) {
+            console.error('Failed to update notification as emailed:', updateErr);
+          }
+        });
+      });
+    });
+  });
+};
+
+// Run this function periodically
+setInterval(checkAndSendNotifications, 60000);// Example: run every 60 seconds
+
 app.use(express.json());
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   credentials: true
 }));
-
 
 // Authentication middleware
 function authenticateJWT(req, res, next) {
@@ -164,7 +271,6 @@ app.get('/', (req, res) => {
 });
 
 
-
 // Registration endpoint
 app.post('/register', async (req, res) => {
   try {
@@ -173,11 +279,15 @@ app.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Name, mobile, email, lawyerType, experience, age and password are required' });
     }
 
+    const avatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&color=fff`;
+
+
     const hashedPassword = await bcrypt.hash(password, 10);
     const emailVerificationToken = crypto.randomBytes(20).toString('hex');
+    const trialStartDate = new Date().toISOString().split('T')[0];
 
-    db.run('INSERT INTO users (name, lawyerType, experience, age, mobile, username, hashed_password, email_verification_token) VALUES (?,?,?,?, ?, ?, ?, ?)',
-      [name, lawyerType, experience, age, mobile, username, hashedPassword, emailVerificationToken], function (err) {
+    db.run('INSERT INTO users (name, lawyerType, experience, age, mobile, username, hashed_password, avatar_url, email_verification_token, trial_start_date) VALUES (?,?,?,?,?,?, ?, ?, ?, ?)',
+      [name, lawyerType, experience, age, mobile, username, hashedPassword,avatarUrl, emailVerificationToken, trialStartDate], function (err) {
         if (err) {
           return res.status(500).json({ error: err.message });
         }
@@ -199,6 +309,7 @@ app.post('/register', async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
 app.post('/wallet/add-funds', authenticateJWT, async (req, res) => {
   // Check if the user is admin
   if (!req.user.isAdmin) {
@@ -212,47 +323,72 @@ app.post('/wallet/add-funds', authenticateJWT, async (req, res) => {
   });
 });
 
-let razorpayInstance = new Razorpay({
-  key_id: 'rzp_test_SJsbPFYVQOtlbi',   //process.env.RAZORPAY_KEY_ID
-  key_secret: 'pde3ZbrQ0YLWOps0GUHhQktB',// process.env.RAZORPAY_KEY_SECRET
-});
-app.post('/wallet/transfer-to-bank', authenticateJWT, async (req, res) => {
-  const { amount, accountNumber, accountName, ifsc } = req.body;
-  const userId = req.user.id;
 
-  // You might want to validate and convert the amount to the smallest currency unit, etc.
-  const payoutAmount = amount * 100; // Convert to paise
+app.post('/wallet/transfer-to-bank', async (req, res) => {
+  const { amount, accountNumber, accountName, ifsc, name: beneficiaryName, email, contactNumber } = req.body;
 
-  // Create the payout
-  const payout = {
-    // account_number: process.env.RAZORPAY_ACCOUNT_NUMBER,
-    fund_account: {
-      account_type: "bank_account",
-      bank_account: {
-        name: accountName,
-        account_number: accountNumber,
-        ifsc: ifsc,
-      },
-    },
-    amount: payoutAmount,
-    currency: "INR",
-    mode: "IMPS", // Choose the appropriate transfer mode
-    purpose: "payout",
-    description: "Wallet payout"
-  };
+  console.log("Received payload for transfer:", req.body);
 
   try {
-    const response = await razorpayInstance.payouts.create(payout);
+      if (!beneficiaryName) {
+          throw new Error('Beneficiary name is required but was not provided.');
+      }
 
-    // Here, update the wallet balance in your database accordingly
-    // Also, log this transaction in your wallet_transactions table
+      // Step 1: Create Contact in Razorpay
+      const contactResponse = await axios.post('https://api.razorpay.com/v1/contacts', {
+          name: beneficiaryName,
+          email: email,
+          contact: contactNumber,
+          type: "customer",
+      }, { auth: razorpayAuth });
 
-    res.json({ success: true, payout: response });
+      console.log("Contact created:", contactResponse.data);
+      const contactId = contactResponse.data.id;
+
+      // Step 2: Create a Fund Account for the Contact
+      const fundAccountResponse = await axios.post('https://api.razorpay.com/v1/fund_accounts', {
+          contact_id: contactId,
+          account_type: "bank_account",
+          bank_account: {
+              name: accountName,
+              account_number: accountNumber,
+              ifsc: ifsc,
+          },
+      }, { auth: razorpayAuth });
+
+      console.log("Fund account created:", fundAccountResponse.data);
+      const fundAccountId = fundAccountResponse.data.id;
+
+      // Step 3: Create a Payout
+      const payoutAmount = parseInt(amount, 10) * 100; 
+      const payoutResponse = await axios.post('https://api.razorpay.com/v1/payouts', {
+          account_number: '2323230005927739', 
+          fund_account_id: fundAccountId, 
+          amount: payoutAmount,
+          currency: "INR",
+          mode: "IMPS", 
+          purpose: "payout",
+          // description: "Wallet to bank transfer",
+      }, { auth: razorpayAuth });
+
+      console.log("Payout created:", payoutResponse.data);
+
+      // Here, you'd normally proceed with deducting the amount from the user's wallet
+      // and other business logic related to your application
+
+      res.json({ success: true, message: "Transfer successfully initiated", data: payoutResponse.data });
   } catch (error) {
-    console.error('Payout Error:', error);
-    res.status(500).json({ success: false, message: "Failed to initiate payout", error: error.message });
+      console.error('Error in transfer:', error.response ? error.response.data : error.message);
+      res.status(500).json({ 
+          success: false, 
+          message: "Failed to initiate transfer", 
+          error: error.response ? error.response.data.error : error.message 
+      });
   }
 });
+
+
+
 
 app.get('/wallet/balance', authenticateJWT, (req, res) => {
   const userId = req.user.id; // Assuming the user's ID is stored in the JWT payload
@@ -290,31 +426,69 @@ app.get('/verifyemail/:token', (req, res) => {
 // Login endpoint
 app.post('/login', (req, res) => {
   const { username, password } = req.body;
-  db.get('SELECT id, username, hashed_password, is_verified FROM users WHERE username = ?', [username], async (err, user) => {
+  db.get('SELECT id, username, hashed_password, is_verified, email_verification_token FROM users WHERE username = ?', [username], async (err, user) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
     if (!user) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
+   
     if (!user.is_verified) {
-      return res.status(401).json({ error: 'Email not verified. Please verify your email.' });
+      // User's email is not verified, resend verification email
+      sendVerificationEmail(username, user.email_verification_token);
+
+      return res.status(401).json({ error: 'Email not verified. A new verification email has been sent to your email address. Please verify your email.' });
     }
+
 
     const validPassword = await bcrypt.compare(password, user.hashed_password);
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
-    const token = jwt.sign({ id: user.id, username: user.username }, secretKey);
-    res.json({ token });
+    const now = new Date().toISOString();
+    db.run('UPDATE users SET is_online = TRUE, last_seen = ? WHERE id = ?', [now, user.id], updateErr => {
+      if (updateErr) {
+        // Optionally handle error
+        console.error('Failed to update user status:', updateErr.message);
+      }
+      const token = jwt.sign({ id: user.id, username: user.username }, secretKey);
+      res.json({ token });
+    });
   });
 });
+
+app.post('/logout', authenticateJWT, (req, res) => {
+  console.log('Logout request received'); // Log when a request is received
+
+  // Check if req.user is defined
+  if (!req.user) {
+    console.log('req.user is undefined. Token may be missing or invalid.');
+    return res.status(401).json({ error: 'Unauthorized: Token missing or invalid.' });
+  }
+
+  console.log('User ID from token:', req.user.id); // Log the user ID extracted from the token
+
+  const userId = req.user.id;
+  const now = new Date().toISOString(); // For updating last_seen
+
+  // Update the user's online status and last_seen timestamp
+  db.run('UPDATE users SET is_online = FALSE, last_seen = ? WHERE id = ?', [now, userId], (err) => {
+    if (err) {
+      console.error('Failed to update user status on logout:', err.message);
+      return res.status(500).json({ error: 'An error occurred while logging out.' });
+    }
+    console.log(`Updated user ${userId} status to offline.`);
+    res.status(200).json({ message: 'Logged out successfully.' });
+  });
+});
+
 
 app.get('/profile', authenticateJWT, (req, res) => {
   const userId = req.user.id;
   
-  db.get('SELECT id,username, name, mobile, lawyerType, experience, age FROM users WHERE id = ?', [userId], (err, user) => {
+  db.get('SELECT id,username, name, mobile, lawyerType, experience, age,avatar_url FROM users WHERE id = ?', [userId], (err, user) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -328,7 +502,7 @@ app.get('/profile', authenticateJWT, (req, res) => {
   });
 });
 app.patch('/profile/edit/update', authenticateJWT, (req, res) => {
-  console.log(req.body); 
+  console.log(req.body);
   const userId = req.user.id;
   const { name, mobile, lawyerType, experience, age } = req.body;
 
@@ -337,12 +511,37 @@ app.patch('/profile/edit/update', authenticateJWT, (req, res) => {
     return res.status(400).json({ error: 'At least one field must be provided for update' });
   }
 
-  // Build the SET clause for the update query dynamically
+  // Check if mobile number already exists for another user
+  if (mobile) {
+    const checkMobileQuery = 'SELECT id FROM users WHERE mobile = ? AND id != ?';
+    db.get(checkMobileQuery, [mobile, userId], (err, row) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      if (row) {
+        return res.status(409).json({ error: 'Mobile number already exists' });
+      } else {
+        // Proceed with update if mobile number does not exist
+        updateUserProfile(req, res, userId, { name, mobile, lawyerType, experience, age });
+      }
+    });
+  } else {
+    // Proceed with update if mobile not provided
+    updateUserProfile(req, res, userId, { name, mobile, lawyerType, experience, age });
+  }
+});
+
+function updateUserProfile(req, res, userId, { name, mobile, lawyerType, experience, age }) {
   const updateFields = [];
   const updateValues = [];
+
   if (name) {
     updateFields.push('name = ?');
     updateValues.push(name);
+
+    const newAvatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&color=fff`;
+    updateFields.push('avatar_url = ?');
+    updateValues.push(newAvatarUrl);
   }
   if (mobile) {
     updateFields.push('mobile = ?');
@@ -363,7 +562,8 @@ app.patch('/profile/edit/update', authenticateJWT, (req, res) => {
 
   const updateQuery = `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`;
   const updateParams = [...updateValues, userId];
-  db.run(updateQuery, updateParams, function (err) {
+
+  db.run(updateQuery, updateParams, function(err) {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -372,7 +572,7 @@ app.patch('/profile/edit/update', authenticateJWT, (req, res) => {
     }
     return res.json({ message: 'Profile updated successfully' });
   });
-});
+}
 
 
 // Endpoint to initiate password reset
@@ -395,7 +595,7 @@ app.post('/forgot-password', async (req, res) => {
       return res.status(404).json({ error: 'Email not found' });
     }
 
-    // const resetLink = `https://lawfax.in/reset-password/${token}`;
+    // const resetLink = `http://localhost:3000/reset-password/${token}`;
     // Send email with resetLink here using your sendVerificationEmail function or similar
     sendForgotPasswordEmail(email,  token);
 
@@ -428,6 +628,31 @@ app.post('/reset-password/:token', async (req, res) => {
       res.json({ message: 'Password successfully reset' });
   });
 });
+app.post('/api/subscribe', authenticateJWT, async (req, res) => {
+  const userId = req.user.id; // Extract user ID from JWT
+  console.log("User ID:", userId);
+
+  const { subscriptionType } = req.body; // This should be either 'monthly' or 'annual'
+  console.log("Received subscription type:", subscriptionType); 
+
+  const currentDate = new Date();
+  let subscriptionEndDate = new Date(currentDate); // Clone the current date to avoid mutation
+  
+  if (subscriptionType === 'monthly') {
+      subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1);
+  } else if (subscriptionType === 'annual') {
+      subscriptionEndDate.setFullYear(subscriptionEndDate.getFullYear() + 1);
+  }
+  
+
+  db.run('UPDATE users SET subscription_end_date = ? WHERE id = ?', [subscriptionEndDate.toISOString().split('T')[0], userId], function(err) {
+    if (err) {
+      console.error("Error updating subscription end date:", err);
+      return res.status(500).json({ error: 'Failed to update subscription end date' });
+    }
+    return res.json({ message: 'Subscription updated successfully.' });
+  });
+})  
 
 
 // Protected route example
@@ -569,7 +794,7 @@ app.get('/alerts/edit', authenticateJWT, (req, res) => {
   const userId = req.user.id;
 
   db.all(
-    'SELECT id, title, startDate, completionDate, caseTitle, caseType, assignFrom, assignTo FROM AlertsForm WHERE user_id = ?',
+    'SELECT id, title, startDate, completionDate, caseTitle, caseType, assignFrom, assignTo FROM AlertsForm WHERE user_id = ? ORDER BY id DESC',
     [userId],
     (err, alertForms) => {
       if (err) {
@@ -686,6 +911,265 @@ app.post('/hearings', authenticateJWT, (req, res) => {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+
+// chat box application
+app.get('/searchUsers', authenticateJWT, checkAccess, async (req, res) => {
+  try {
+    const { query } = req.query; // Get the search query from URL parameters
+    const userId = req.user.id; // Assuming req.user.id contains the current user's ID
+
+    // SQL query that searches for users by name or username but excludes the current user
+    const sql = `SELECT * FROM users WHERE (name LIKE ? OR username LIKE ?) AND id <> ?`;
+    const params = [`%${query}%`, `%${query}%`, userId];
+
+    db.all(sql, params, (err, rows) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json({
+        message: 'Success',
+        data: rows
+      });
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+app.post('/api/chats', authenticateJWT,checkAccess, async (req, res) => {
+  try {
+    const userId = req.user.id; // Current user's ID
+    const selectedUserId = req.body.selectedUserId; // User selected from search
+
+    // Check if a chat session already exists
+    const findChatSql = `
+      SELECT * FROM chats
+      WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?);
+    `;
+
+    db.get(findChatSql, [userId, selectedUserId, selectedUserId, userId], async (err, row) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+
+      if (row) {
+        // Chat exists, now fetch selected user's details
+        const userDetails = await fetchUserDetails(selectedUserId);
+        res.json({ 
+          message: 'Chat session retrieved successfully', 
+          chatId: row.id,
+          user: userDetails // Include user details in the response
+        });
+      } else {
+        // No chat exists, create a new chat session
+        const insertChatSql = `INSERT INTO chats (user1_id, user2_id) VALUES (?, ?);`;
+        db.run(insertChatSql, [userId, selectedUserId], async function(err) {
+          if (err) {
+            return res.status(500).json({ error: err.message });
+          }
+          
+          const userDetails = await fetchUserDetails(selectedUserId);
+          // Return the new chat ID along with selected user's details
+          res.json({ 
+            message: 'Chat session created successfully', 
+            chatId: this.lastID,
+            user: userDetails // Include user details
+          });
+        });
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Function to fetch user details by ID
+async function fetchUserDetails(userId) {
+  return new Promise((resolve, reject) => {
+    const sql = `SELECT id, name, username, avatar_url FROM users WHERE id = ?`;
+    db.get(sql, [userId], (err, row) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(row); // Return the user details
+      }
+    });
+  });
+}
+app.get('/api/chats', authenticateJWT,checkAccess, async (req, res) => {
+  try {
+    const userId = req.user.id; // Get current user's ID from JWT
+
+    // SQL query to fetch chats and count of unread messages
+    const sql = `
+      SELECT chats.id, chats.user1_id, chats.user2_id, 
+      u1.name AS user1_name, u1.avatar_url AS user1_avatar_url, u1.is_online AS user1_online, 
+      u2.name AS user2_name, u2.avatar_url AS user2_avatar_url, u2.is_online AS user2_online,
+      (SELECT COUNT(*) FROM messages WHERE chat_id = chats.id AND sender_id != ? AND is_read = 0) AS unread_messages_count
+      FROM chats
+      JOIN users u1 ON chats.user1_id = u1.id
+      JOIN users u2 ON chats.user2_id = u2.id
+      WHERE chats.user1_id = ? OR chats.user2_id = ?;
+    `;
+
+    // Execute the SQL query
+    db.all(sql, [userId, userId, userId], (err, rows) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+
+      // Transform rows to include only the relevant details
+      const chats = rows.map(row => {
+        const otherUser = row.user1_id === userId ? 
+          { id: row.user2_id, name: row.user2_name, avatarUrl: row.user2_avatar_url, isOnline: row.user2_online, unreadMessagesCount: row.unread_messages_count } : 
+          { id: row.user1_id, name: row.user1_name, avatarUrl: row.user1_avatar_url, isOnline: row.user1_online, unreadMessagesCount: row.unread_messages_count };
+        return { chatId: row.id, otherUser };
+      });
+
+      res.json({
+        message: 'Success',
+        data: chats
+      });
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+// This route now handles both text messages and file uploads
+app.post('/api/messages', authenticateJWT, upload.single('file') ,checkAccess,async (req, res) => {
+  const { chatId, content } = req.body; // Text content of the message
+  const senderId = req.user.id; // Sender's user ID from JWT
+  const filePath = req.file ? req.file.filename : null; // File path if a file is uploaded
+
+  if (!chatId || (!content && !filePath)) {
+    return res.status(400).json({ error: 'Chat ID and either content or a file are required' });
+  }
+
+  try {
+    const sql = `INSERT INTO messages (chat_id, sender_id, content, file_path) VALUES (?, ?, ?, ?)`;
+    const params = [chatId, senderId, content, filePath];
+
+    db.run(sql, params, function (err) {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json({ message: 'Message sent successfully', messageId: this.lastID });
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+
+app.get('/api/messages/:chatId', authenticateJWT,checkAccess, async (req, res) => {
+  const { chatId } = req.params;
+  // Assuming `db` is your database connection
+  try {
+    const sql = `SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at ASC`;
+    const params = [chatId];
+    db.all(sql, params, (err, messages) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json({ messages });
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/currentUser', authenticateJWT, async (req, res) => {
+  try {
+    // Assuming req.user is populated from the authenticateJWT middleware
+    const userId = req.user.id; // Or however you store the user ID in the req.user object
+
+    // You might want to fetch more details from the database, but here we just return the ID
+    res.json({ userId });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.patch('/api/messages/read', authenticateJWT,checkAccess, async (req, res) => {
+  const { chatId } = req.body;
+  const userId = req.user.id; // Current user's ID
+
+  try {
+    const sql = `UPDATE messages SET is_read = 1 WHERE chat_id = ? AND sender_id != ?`;
+    db.run(sql, [chatId, userId], function(err) {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+      res.json({ message: 'Messages marked as read' });
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+app.get('/api/messages/unread/global-count', authenticateJWT,checkAccess, async (req, res) => {
+  const userId = req.user.id; // Extract user ID from JWT token
+
+  console.log(`Fetching global unread count for user ID: ${userId}`); // Log before executing the query
+
+  const sql = `
+    SELECT COUNT(*) AS globalUnreadCount
+    FROM messages
+    JOIN chats ON messages.chat_id = chats.id
+    WHERE (chats.user1_id = ? OR chats.user2_id = ?)
+    AND messages.sender_id != ?
+    AND messages.is_global_read = 0;
+  `;
+
+  db.get(sql, [userId, userId, userId], (err, result) => {
+    if (err) {
+      console.error(`Error fetching global unread count for user ID: ${userId}`, err); // Log any error
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+    console.log(`Global unread count for user ID: ${userId} is ${result.globalUnreadCount}`); // Log the result
+    res.json({ globalUnreadCount: result.globalUnreadCount });
+  });
+});
+
+app.patch('/api/messages/mark-global-read', authenticateJWT,checkAccess, async (req, res) => {
+  const userId = req.user.id; // Extract user ID from JWT token
+
+  const sql = `
+    UPDATE messages
+    SET is_global_read = 1
+    WHERE id IN (
+      SELECT messages.id
+      FROM messages
+      JOIN chats ON messages.chat_id = chats.id
+      WHERE (chats.user1_id = ? OR chats.user2_id = ?)
+      AND messages.sender_id != ?
+      AND messages.is_global_read = 0
+    );
+  `;
+
+  db.run(sql, [userId, userId, userId], (err) => {
+    if (err) {
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+    res.json({ message: 'Messages marked as globally read' });
+  });
+});
+
+
+
+
 
 
 app.post('/appointments', authenticateJWT, (req, res) => {
@@ -986,81 +1470,7 @@ app.delete('/alerts/:alertId', authenticateJWT, async (req, res) => {
   }
 });
 
-// Download alert PDF by ID
-// app.get('/alerts/download-pdf/:alertId', authenticateJWT, async (req, res) => {
-//   try {
-//     const { alertId } = req.params;
-
-//     // Check if the alert with the given ID belongs to the authenticated user
-//     const alertData = await new Promise((resolve, reject) => {
-//       db.get(
-//         'SELECT * FROM AlertsForm WHERE id = ? AND user_id = ?',
-//         [alertId, req.user.id],
-//         (err, row) => {
-//           if (err) {
-//             reject(err);
-//           } else {
-//             resolve(row);
-//           }
-//         }
-//       );
-//     });
-
-//     if (!alertData) {
-//       return res.status(404).json({ error: 'Alert not found' });
-//     }
-
-//     // Define an HTML template for your PDF content (you can use a template engine like EJS)
-//     const template = `
-//     <html>
-//     <head>
-//       <title>Alert Data</title>
-//       <style>
-      
-//     </style>
-//     </head>
-//     <body>
-//       <h1>Alert Data</h1>
-//       <p>Title: <%= title %></p>
-//       <p>Case Title: <%= caseTitle %></p>
-//       <p>Case Type: <%= caseType %></p>
-//       <p>Start Date: <%= startDate %></p>
-//       <p>Completion Date: <%= completionDate %></p>
-//       <p>Assign From: <%= assignFrom %></p>
-//       <p>Assign To: <%= assignTo %></p>
-      
-      
-      
-//       <!-- Add more fields as needed -->
-//     </body>
-//   </html>
-  
-//     `;
-
-//     // Compile the template with data
-//     const htmlContent = ejs.render(template, alertData);
-
-//     // Create a PDF from the HTML content
-//     pdf.create(htmlContent).toStream((err, stream) => {
-//       if (err) {
-//         console.error(err);
-//         return res.status(500).json({ error: 'Error generating PDF' });
-//       }
-
-//       // Set the response headers for PDF download
-//       res.setHeader('Content-Type', 'application/pdf');
-//       res.setHeader('Content-Disposition', `attachment; filename=Alert_${alertData.id}.pdf`);
-
-//       // Pipe the PDF stream to the response
-//       stream.pipe(res);
-//     });
-//   } catch (error) {
-//     console.error(error);
-//     return res.status(500).json({ error: 'Internal Server Error' });
-//   }
-// });
-
-
+//Download alert PDF by ID
 app.get('/alerts/download-pdf/:alertId', authenticateJWT, async (req, res) => {
   try {
     const { alertId } = req.params;
@@ -1084,59 +1494,169 @@ app.get('/alerts/download-pdf/:alertId', authenticateJWT, async (req, res) => {
       return res.status(404).json({ error: 'Alert not found' });
     }
 
-    // Assuming you are using ejs for templating
-    const ejs = require("ejs");
-
-    // Define your HTML template
+    // Define an HTML template for your PDF content (you can use a template engine like EJS)
     const template = `
-    <html>
+    <!DOCTYPE html>
+    <html lang="en">
     <head>
-      <title>Alert Data</title>
-      <style>
-      /* Your CSS here */
-      </style>
+        <meta charset="UTF-8">
+        <title>Alert Data</title>
+        <style>
+            body {
+                font-family: 'Times New Roman', Times, serif;
+                padding: 40px;
+                background: #fff;
+                color: #000;
+                margin: 0;
+            }
+            .container {
+                max-width: 700px;
+                margin: 20px auto;
+                border: 1px solid #ddd;
+                padding: 20px;
+            }
+            h1 {
+                font-size: 24px;
+                text-align: center;
+                color: #333;
+                margin-bottom: 30px;
+            }
+            p {
+                font-size: 16px;
+                margin: 10px 0 20px;
+            }
+            p span.label {
+                font-weight: bold;
+                display: inline-block;
+                min-width: 150px;
+                color: #555;
+            }
+            .footer {
+                text-align: center;
+                margin-top: 40px;
+                font-size: 14px;
+                color: #666;
+            }
+        </style>
     </head>
     <body>
-      <h1>Alert Data</h1>
-      <p>Title: <%= title %></p>
-      <p>Case Title: <%= caseTitle %></p>
-      <p>Case Type: <%= caseType %></p>
-      <p>Start Date: <%= startDate %></p>
-      <p>Completion Date: <%= completionDate %></p>
-      <p>Assign From: <%= assignFrom %></p>
-      <p>Assign To: <%= assignTo %></p>
-      <!-- Add more fields as needed -->
+        <div class="container">
+            <h1>Alert Data</h1>
+            <p><span class="label">Title:</span>  <%= title %></p>
+            <p><span class="label">Case Title:</span> <%= caseTitle %></p>
+            <p><span class="label">Case Type:</span> <%= caseType %></p>
+            <p><span class="label">Start Date:</span> <%= startDate %></p>
+            <p><span class="label">Completion Date:</span> <%= completionDate %></p>
+            <p><span class="label">Assign From:</span>  <%= assignFrom %></p>
+            <p><span class="label">Assign To:</span> <%= assignTo %></p>
+            <!-- Add more fields as needed -->
+            <div class="footer">
+                Confidential Document | [Your Company or Department Name]
+            </div>
+        </div>
     </body>
-    </html>
+    </html>    
     `;
 
     // Compile the template with data
     const htmlContent = ejs.render(template, alertData);
 
-    // Launch Puppeteer
-    const browser = await puppeteer.launch();
-    const page = await browser.newPage();
-    await page.setContent(htmlContent);
+    // Create a PDF from the HTML content
+    pdf.create(htmlContent).toStream((err, stream) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Error generating PDF' });
+      }
 
-    // Generate PDF from the page content
-    const pdfBuffer = await page.pdf({ format: 'A4' });
+      // Set the response headers for PDF download
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename=Alert_${alertData.id}.pdf`);
 
-    // Close the browser
-    await browser.close();
-
-    // Set the response headers for PDF download
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=Alert_${alertData.id}.pdf`);
-
-    // Send the PDF buffer to the client
-    res.send(pdfBuffer);
-
+      // Pipe the PDF stream to the response
+      stream.pipe(res);
+    });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
+
+// app.get('/alerts/download-pdf/:alertId', authenticateJWT, async (req, res) => {
+//   try {
+//     const { alertId } = req.params;
+
+//     // Check if the alert with the given ID belongs to the authenticated user
+//     const alertData = await new Promise((resolve, reject) => {
+//       db.get(
+//         'SELECT * FROM AlertsForm WHERE id = ? AND user_id = ?',
+//         [alertId, req.user.id],
+//         (err, row) => {
+//           if (err) {
+//             reject(err);
+//           } else {
+//             resolve(row);
+//           }
+//         }
+//       );
+//     });
+
+//     if (!alertData) {
+//       return res.status(404).json({ error: 'Alert not found' });
+//     }
+
+//     // Assuming you are using ejs for templating
+//     const ejs = require("ejs");
+
+//     // Define your HTML template
+//     const template = `
+//     <html>
+//     <head>
+//       <title>Alert Data</title>
+//       <style>
+//       /* Your CSS here */
+//       </style>
+//     </head>
+//     <body>
+//       <h1>Alert Data</h1>
+//       <p>Title: <%= title %></p>
+//       <p>Case Title: <%= caseTitle %></p>
+//       <p>Case Type: <%= caseType %></p>
+//       <p>Start Date: <%= startDate %></p>
+//       <p>Completion Date: <%= completionDate %></p>
+//       <p>Assign From: <%= assignFrom %></p>
+//       <p>Assign To: <%= assignTo %></p>
+//       <!-- Add more fields as needed -->
+//     </body>
+//     </html>
+//     `;
+
+//     // Compile the template with data
+//     const htmlContent = ejs.render(template, alertData);
+
+//     // Launch Puppeteer
+//     const browser = await puppeteer.launch();
+//     const page = await browser.newPage();
+//     await page.setContent(htmlContent);
+
+//     // Generate PDF from the page content
+//     const pdfBuffer = await page.pdf({ format: 'A4' });
+
+//     // Close the browser
+//     await browser.close();
+
+//     // Set the response headers for PDF download
+//     res.setHeader('Content-Type', 'application/pdf');
+//     res.setHeader('Content-Disposition', `attachment; filename=Alert_${alertData.id}.pdf`);
+
+//     // Send the PDF buffer to the client
+//     res.send(pdfBuffer);
+
+//   } catch (error) {
+//     console.error(error);
+//     return res.status(500).json({ error: 'Internal Server Error' });
+//   }
+// });
 
 
 
@@ -1167,7 +1687,7 @@ app.get('/dashboard/alert/teammembers', authenticateJWT, (req, res) => {
 
 
 //get endpoint to render teammember form data on edit form
-app.use('/uploads', express.static(path.join(__dirname, '../frontend/src/uploads')));
+app.use('/uploads', express.static(path.join(__dirname, './Db-data/uploads')));
 
 
 //get endpoint to render teammember form data on edit form
@@ -1175,7 +1695,7 @@ app.get('/dashboard/teammemberform/edit', authenticateJWT, (req, res) => {
   const userId = req.user.id;
 
   db.all(
-    'SELECT id,image, fullName, email, designation, address, state, city, zipCode, selectedGroup, selectedCompany, mobileno FROM TeamMembers WHERE user_id = ?',
+    'SELECT id,image, fullName, email, designation, address, state, city, zipCode, selectedGroup, selectedCompany, mobileno FROM TeamMembers WHERE user_id = ? ORDER BY id DESC',
     [userId],
     (err, teamMembers) => {
       if (err) {
@@ -1382,23 +1902,72 @@ app.get('/dashboard/teammemberform/download-pdf/:memberId', authenticateJWT, asy
 
     // Define an HTML template for your PDF content (you can use a template engine like EJS)
     const template = `
-    <html>
-    <head>
-      <title>Team Member Data</title>
-    </head>
-    <body>
-      <h1>Team Member Data</h1>
-      <p>Full Name: <%= fullName %></p>
-      <p>Email: <%= email %></p>
-      <p>Mobile Number: <%= mobileno %></p>
-      <p>Designation: <%= designation %></p>
-      <p>Address: <%= address %></p>
-      <p>State: <%= state %></p>
-      <p>City: <%= city %></p>
-      <p>Zip Code: <%= zipCode %></p>
-      <p>Selected Group: <%= selectedGroup %></p>
-    </body>
-  </html>
+    <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Team Member Data</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            padding: 40px;
+            background: #f4f4f9;
+            color: #333;
+            margin: 0;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 800px;
+            margin: 20px auto;
+            background: #ffffff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #0056b3;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #0056b3;
+        }
+        p {
+            background: #e9ecef;
+            padding: 10px;
+            border-radius: 5px;
+            border-left: 5px solid #0056b3;
+            margin: 10px 0;
+            font-size: 16px;
+        }
+        p span {
+            font-weight: bold;
+            color: #0056b3;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            font-size: 14px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Team Member Data</h1>
+        <p><span>Full Name:</span> <%= fullName %></p>
+        <p><span>Email:</span> <%= email %></p>
+        <p><span>Mobile Number:</span> <%= mobileno %></p>
+        <p><span>Designation:</span> <%= designation %></p>
+        <p><span>Address:</span>  <%= address %></p>
+        <p><span>State:</span>  <%= state %></p>
+        <p><span>City:</span> <%= city %></p>
+        <p><span>Zip Code:</span> <%= zipCode %></p>
+        <p><span>Selected Group:</span>  <%= selectedGroup %></p>
+        <div class="footer">
+            © 2024 Company Name. All rights reserved.
+        </div>
+    </div>
+</body>
+</html>
     `;
 
     // Compile the template with data
@@ -1498,7 +2067,7 @@ app.get('/bill/edit', authenticateJWT, (req, res) => {
   const userId = req.user.id;
 
   db.all(
-    'SELECT id, billNumber, title, currentDate, dateFrom, dateTo, fullAddress, billingType, totalHours, noOfHearings, totalAmount, amount, taxType, taxPercentage, totalAmountWithTax, description, addDoc FROM BillForm WHERE user_id = ?',
+    'SELECT id, billNumber, title, currentDate, dateFrom, dateTo, fullAddress, billingType, totalHours, noOfHearings, totalAmount, amount, taxType, taxPercentage, totalAmountWithTax, description, addDoc FROM BillForm WHERE user_id = ? ORDER BY id DESC',
     [userId],
     (err, billForms) => {
       if (err) {
@@ -1627,30 +2196,130 @@ app.get('/billdata/download-pdf/:billId', authenticateJWT, async (req, res) => {
 
     // Define an HTML template for your PDF content (you can use a template engine like EJS)
     const template = `
-    <html>
-  <head>
-    <title>Bill Data</title>
-  </head>
-  <body>
-    <h1>Bill Data</h1>
-    <p>Bill Number: <%= billNumber %></p>
-    <p>Title: <%= title %></p>
-    <p>Current Date: <%= currentDate %></p>
-    <p>Date From: <%= dateFrom %></p>
-    <p>Date To: <%= dateTo %></p>
-    <p>Full Address: <%= fullAddress %></p>
-    <p>Billing Type: <%= billingType %></p>
-    <p>Total Hours: <%= totalHours %></p>
-    <p>No. of Hearings: <%= noOfHearings %></p>
-    <p>Total Amount: <%= totalAmount %></p>
-    <p>Amount: <%= amount %></p>
-    <p>Tax Type: <%= taxType %></p>
-    <p>Tax Percentage: <%= taxPercentage %></p>
-    <p>Total Amount With Tax: <%= totalAmountWithTax %></p>
-    <p>Description: <%= description %></p>
-    <!-- Add more fields as needed -->
-  </body>
+    <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Bill Data</title>
+  <style>
+    body {
+      font-family: 'Arial', sans-serif;
+      background-color: #f5f5f5;
+      margin: 0;
+      padding: 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background-color: #fff;
+      margin-top: 20px;
+    }
+    th, td {
+      padding: 12px;
+      border: 1px solid #ddd;
+      text-align: left;
+      font-size: 1rem;
+    }
+    th {
+      background-color: #007BFF;
+      color: #ffffff;
+    }
+    .header {
+      background-color: #28a745;
+      color: #fff;
+      font-size: 1.5rem;
+      text-align: center;
+      padding: 10px 0;
+      margin-bottom: 20px;
+      border-radius: 4px;
+    }
+    .total-row, .tax-row {
+      background-color: #ffc107;
+      color: #212529;
+      font-weight: bold;
+    }
+    .highlight {
+      background-color: #17a2b8;
+      color: #fff;
+    }
+    .description {
+      background-color: #6c757d;
+      color: #fff;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">Bill Data</div>
+  <table>
+    <tr>
+      <th>Field</th>
+      <th>Details</th>
+    </tr>
+    <tr>
+      <td>Bill Number</td>
+      <td><%= billNumber %></td>
+    </tr>
+    <tr>
+      <td>Title</td>
+      <td><%= title %></td>
+    </tr>
+    <tr>
+      <td>Current Date</td>
+      <td><%= currentDate %></td>
+    </tr>
+    <tr>
+      <td>Date From</td>
+      <td><%= dateFrom %></td>
+    </tr>
+    <tr>
+      <td>Date To</td>
+      <td><%= dateTo %></td>
+    </tr>
+    <tr>
+      <td>Full Address</td>
+      <td><%= fullAddress %></td>
+    </tr>
+    <tr>
+      <td>Billing Type</td>
+      <td><%= billingType %></td>
+    </tr>
+    <tr>
+      <td>Total Hours</td>
+      <td><%= totalHours %></td>
+    </tr>
+    <tr>
+      <td>No. of Hearings</td>
+      <td><%= noOfHearings %></td>
+    </tr>
+    <tr class="total-row">
+      <td>Total Amount</td>
+      <td><%= totalAmount %></td>
+    </tr>
+    <tr>
+      <td>Amount</td>
+      <td><%= amount %></td>
+    </tr>
+    <tr class="tax-row">
+      <td>Tax Type</td>
+      <td><%= taxType %></td>
+    </tr>
+    <tr class="tax-row">
+      <td>Tax Percentage</td>
+      <td><%= taxPercentage %></td>
+    </tr>
+    <tr class="highlight">
+      <td>Total Amount With Tax</td>
+      <td><%= totalAmountWithTax %></td>
+    </tr>
+    <tr class="description">
+      <td>Description</td>
+      <td><%= description %></td>
+    </tr>
+  </table>
+</body>
 </html>
+
 
     `;
 
@@ -1678,61 +2347,556 @@ app.get('/billdata/download-pdf/:billId', authenticateJWT, async (req, res) => {
 });
 
 
+function runQuery(query, params) {
+  return new Promise((resolve, reject) => {
+    db.run(query, params, function(err) {
+      if (err) reject(err);
+      else resolve(this.lastID);
+    });
+  });
+}
+// app.post('/updatecase', authenticateJWT, async (req, res) => {
+//   const casesArray = req.body.cases;
+//   const userId = req.user.id; // Assuming you have a way to extract this from the authenticated user
 
+//   try {
+//     let lastId;
+//     for (const caseData of casesArray) {
+//       const query = `
+//         INSERT INTO UpdateCases (
+//           cino, case_no, court_no_desg_name, date_last_list, date_next_list,
+//           date_of_decision, district_code, district_name, establishment_code,
+//           establishment_name, fil_no, fil_year, petparty_name, note, reg_no,
+//           reg_year, resparty_name, state_code, state_name, type_name, updated, user_id
+//         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+//       `;
+//       // Prepare parameters for the query from caseData and userId
+//       const params = [
+//         caseData.cino, caseData.case_no, caseData.court_no_desg_name, caseData.date_last_list, caseData.date_next_list,
+//         caseData.date_of_decision, caseData.district_code, caseData.district_name, caseData.establishment_code,
+//         caseData.establishment_name, caseData.fil_no, caseData.fil_year, caseData.petparty_name, caseData.note, caseData.reg_no,
+//         caseData.reg_year, caseData.resparty_name, caseData.state_code, caseData.state_name, caseData.type_name, caseData.updated, userId
+//       ];
+
+//       lastId = await runQuery(query, params);
+//     }
+
+//     if (lastId !== undefined) {
+//       res.json({ caseId: lastId, message: 'Case added successfully' });
+//     } else {
+//       res.status(400).json({ error: 'Failed to add the case' });
+//     }
+//   } catch (error) {
+//     console.error('Error in /updatecase endpoint:', error);
+    
+//     if (error.code === 'SQLITE_CONSTRAINT' && error.message.includes('UNIQUE constraint failed: UpdateCases.cino')) {
+//       res.status(400).json({ error: 'A case with the given CNR No. already exists.' });
+//     } else {
+//       res.status(500).json({ error: 'Internal Server Error' });
+//     }
+//   }
+// });
+
+function runQuery(query, params) {
+  return new Promise((resolve, reject) => {
+    db.run(query, params, function(err) {
+      if (err) {
+        console.error("Database Error:", err); // Debugging
+        reject(err);
+      } else {
+        console.log("Last Inserted ID:", this.lastID); // Debugging
+        resolve(this.lastID);
+      }
+    });
+  });
+}
 
 app.post('/updatecase', authenticateJWT, async (req, res) => {
-  try {
-    const casesArray = req.body.cases; // Extracting the array of cases from the request body
-    const userId = req.user.id; // Extracting the user ID from the authenticated user
+  const casesArray = req.body.cases;
+  const userId = req.user.id;
 
-    // SQL query template for inserting a case
-    const query = `INSERT INTO UpdateCases (
-      cino, case_no, court_no_desg_name, date_last_list, date_next_list, 
-      date_of_decision, district_code, district_name, establishment_code, 
-      establishment_name, fil_no, fil_year, lcourt_no_desg_name, ldistrict_name, 
-      lestablishment_name, lpetparty_name, lresparty_name, lstate_name, ltype_name, 
-      petparty_name, note, reg_no, reg_year, resparty_name, 
-      state_code, state_name, type_name, updated, user_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  let addedCases = []; // Store lastIDs of successfully added cases
+  let skippedCases = 0; // Count skipped cases due to existing cino
 
-    // Loop over each case object and insert into the database
-    for (const caseData of casesArray) {
-      db.run(
-        query,
-        [
-          caseData.cino, caseData.case_no, caseData.court_no_desg_name, caseData.date_last_list, caseData.date_next_list,
-          caseData.date_of_decision, caseData.district_code, caseData.district_name, caseData.establishment_code,
-          caseData.establishment_name, caseData.fil_no, caseData.fil_year, caseData.lcourt_no_desg_name, caseData.ldistrict_name,
-          caseData.lestablishment_name, caseData.lpetparty_name, caseData.lresparty_name, caseData.lstate_name, caseData.ltype_name,
-          caseData.petparty_name, caseData.note, caseData.reg_no, caseData.reg_year, caseData.resparty_name,
-          caseData.state_code, caseData.state_name, caseData.type_name, caseData.updated, userId
-        ],
-        function (err) {
-          if (err) {
-            console.error('Error inserting case:', err.message);
-            // Handle error - perhaps accumulate errors in a list and return them later
-          }
-          // Successful insert for this case
-        }
-      );
+  for (const caseData of casesArray) {
+    const query = `
+      INSERT INTO UpdateCases (
+        cino,court, case_no, court_no_desg_name, date_last_list, date_next_list,
+        date_of_decision, district_code, district_name, establishment_code,
+        establishment_name, fil_no, fil_year, petparty_name, note, reg_no,
+        reg_year, resparty_name, state_code, state_name, type_name, updated, user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    const params = [
+      caseData.cino,caseData.court, caseData.case_no, caseData.court_no_desg_name, caseData.date_last_list, caseData.date_next_list,
+      caseData.date_of_decision, caseData.district_code, caseData.district_name, caseData.establishment_code,
+      caseData.establishment_name, caseData.fil_no, caseData.fil_year, caseData.petparty_name, caseData.note, caseData.reg_no,
+      caseData.reg_year, caseData.resparty_name, caseData.state_code, caseData.state_name, caseData.type_name, caseData.updated, userId
+    ];
+
+    try {
+      const lastId = await runQuery(query, params);
+      addedCases.push(lastId);
+    } catch (error) {
+      if (error.code === 'SQLITE_CONSTRAINT' && error.message.includes('UNIQUE constraint failed: UpdateCases.cino')) {
+        skippedCases++;
+        continue;
+      } else {
+        console.error('Error adding case with cino:', caseData.cino, error);
+      }
     }
+  }
 
-    // Respond to the client after all cases have been processed
-    res.json({ message: 'All cases submitted successfully' });
+  res.json({
+    message: `Cases processed. Added: ${addedCases.length}, Skipped: ${skippedCases}`,
+    addedCaseIds: addedCases
+  });
+});
+app.post('/uploadcasefile', authenticateJWT, upload.single('case_file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded.' });
+  }
 
-  } catch (error) {
-    console.error('Error in /updatecase endpoint:', error.message);
-    return res.status(500).json({ error: 'Internal Server Error' });
+  const { caseId } = req.body; // Ensure 'caseId' is sent with FormData
+  const userId = req.user.id; // User ID from JWT
+  const filePath = req.file.filename; // Assuming you want the path where the file is saved
+
+  // SQL query to insert the new file path into CaseFiles
+  const insertQuery = `
+    INSERT INTO CaseFiles (case_id, file_path, user_id)
+    VALUES (?, ?, ?)
+  `;
+
+  db.run(insertQuery, [caseId, filePath, userId], function(err) {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    return res.json({ message: 'Case file added successfully', filePath });
+  });
+});
+app.get('/case-files/:caseId', authenticateJWT, async (req, res) => {
+  const { caseId } = req.params; // Extract caseId from URL parameters
+  const userId = req.user.id; // User ID from JWT token, assuming authenticateJWT adds this
+
+  // SQL query to select all files for the specified caseId and userId
+  const selectQuery = `
+    SELECT * FROM CaseFiles
+    WHERE case_id = ? AND user_id = ?
+    ORDER BY id DESC
+  `;
+
+  db.all(selectQuery, [caseId, userId], (err, files) => {
+    if (err) {
+      console.error('Error fetching case files:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    if (files.length === 0) {
+      // No files found for this case
+      return res.status(404).json({ error: 'No files found for this case' });
+    }
+    // Return the list of files
+    res.json(files);
+  });
+});
+app.get('/download/:filename', authenticateJWT, (req, res) => {
+  const { filename } = req.params;
+  const directoryPath = path.join(__dirname, './Db-data/uploads'); // Adjust 'uploads' to your files directory
+  const filePath = path.join(directoryPath, filename);
+
+  // Validate file exists
+  if (fs.existsSync(filePath)) {
+    res.download(filePath, filename, (err) => {
+      if (err) {
+        console.error(err);
+        res.status(500).send("Could not download the file.");
+      }
+    });
+  } else {
+    res.status(404).send("File not found.");
   }
 });
 
+app.delete('/delete-document/:documentId', authenticateJWT, async (req, res) => {
+  const { documentId } = req.params;
+  const userId = req.user.id; // User ID from JWT token
+
+  // First, find the file to get its filename (for deletion from the filesystem)
+  const selectQuery = `SELECT * FROM CaseFiles WHERE id = ? AND user_id = ?`;
+
+  db.get(selectQuery, [documentId, userId], (err, file) => {
+    if (err) {
+      console.error('Error fetching document:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    if (!file) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+
+    // If file is found, delete it from the database
+    const deleteQuery = `DELETE FROM CaseFiles WHERE id = ? AND user_id = ?`;
+
+    db.run(deleteQuery, [documentId, userId], function(err) {
+      if (err) {
+        console.error('Error deleting document:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      if (this.changes === 0) {
+        return res.status(404).json({ error: 'Document not found' });
+      }
+
+      // Optionally, delete the file from the filesystem
+      const filePath = path.join(__dirname, './Db-data/uploads', file.file_path);
+      fs.unlink(filePath, (err) => {
+        if (err) {
+          console.error('Error deleting file from filesystem:', err);
+          // Even if file deletion fails, inform that database entry was removed
+          return res.json({ message: 'Document deleted from database, but file deletion failed' });
+        }
+        res.json({ message: 'Document deleted successfully' });
+      });
+    });
+  });
+});
+
+app.post('/note', authenticateJWT, async (req, res) => {
+  const { caseId, note } = req.body;
+  console.log(req.body); // Add this line in your '/note' endpoint to log the request body
+
+
+  if (!caseId) {
+    return res.status(400).json({ error: 'Case ID is required' });
+  }
+
+  const insertQuery = `
+    INSERT INTO Notes (case_id, note)
+    VALUES (?, ?)
+  `;
+
+  const userId = req.user.id;
+
+  // Check if the case exists and belongs to the user before adding a note
+  const caseExistsQuery = `SELECT 1 FROM UpdateCases WHERE id = ? AND user_id = ? LIMIT 1`;
+
+  db.get(caseExistsQuery, [caseId, userId], (err, row) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    if (!row) {
+      return res.status(404).json({ error: 'Case not found or does not belong to the user' });
+    }
+
+    // If case exists, insert the note
+    db.run(insertQuery, [caseId, note], function(err) {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      return res.json({ message: 'Note added successfully' });
+    });
+  });
+});
+
+app.get('/notes/:caseId', authenticateJWT, async (req, res) => {
+  const { caseId } = req.params;
+
+  if (!caseId) {
+    return res.status(400).json({ error: 'Case ID is required' });
+  }
+
+  const userId = req.user.id; // Assuming you want to ensure that only the notes belonging to the logged-in user are fetched
+
+  const selectQuery = `
+    SELECT * FROM Notes
+    WHERE case_id = ? AND EXISTS (
+      SELECT 1 FROM UpdateCases WHERE id = ? AND user_id = ?
+    )
+    ORDER BY id DESC
+  `;
+
+  db.all(selectQuery, [caseId, caseId, userId], (err, rows) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'No notes found for this case or case does not belong to the user' });
+    }
+    res.json(rows); // Send back the array of notes
+  });
+});
+app.delete('/note/:noteId', authenticateJWT, async (req, res) => {
+  const { noteId } = req.params;
+  const userId = req.user.id; // Assuming the note should only be deletable by the user who owns it
+
+  // First, check if the note exists and belongs to the logged-in user
+  const noteExistsQuery = `
+    SELECT 1 FROM Notes
+    JOIN UpdateCases ON Notes.case_id = UpdateCases.id
+    WHERE Notes.id = ? AND UpdateCases.user_id = ?
+    LIMIT 1
+  `;
+
+  db.get(noteExistsQuery, [noteId, userId], (err, row) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    if (!row) {
+      return res.status(404).json({ error: 'Note not found or does not belong to the user' });
+    }
+
+    // If the note exists and belongs to the user, proceed with deletion
+    const deleteQuery = `
+      DELETE FROM Notes
+      WHERE id = ?
+    `;
+
+    db.run(deleteQuery, [noteId], function(err) {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Failed to delete note' });
+      }
+      if (this.changes === 0) {
+        // No rows were deleted, this should not happen since we already checked the note exists
+        return res.status(404).json({ error: 'Note not found' });
+      }
+      res.json({ message: 'Note deleted successfully' });
+    });
+  });
+});
+
+
+app.post('/person', authenticateJWT, async (req, res) => {
+  const { caseId, client, team, type, lawyerType } = req.body;
+
+  if (!caseId) {
+    return res.status(400).json({ error: 'Case ID is required' });
+  }
+
+  // Ensure the case exists and belongs to the user
+  const caseExistsQuery = `SELECT 1 FROM UpdateCases WHERE id = ? AND user_id = ? LIMIT 1`;
+  const userId = req.user.id;
+
+  db.get(caseExistsQuery, [caseId, userId], (err, row) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    if (!row) {
+      return res.status(404).json({ error: 'Case not found or does not belong to the user' });
+    }
+
+    // Insert data into CaseDetails table
+    const insertQuery = `
+      INSERT INTO CaseDetails (case_id, client, team, type, lawyerType, user_id)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `;
+
+    db.run(insertQuery, [caseId, client, team, type, lawyerType, userId], function(err) {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      return res.json({ message: 'Case detail added successfully' });
+    });
+  });
+});
+app.get('/case-details/:caseId', authenticateJWT, async (req, res) => {
+ 
+  const { caseId } = req.params;
+  const userId = req.user.id; // Assuming the middleware has already attached the user ID to the request
+  console.log("Fetching case details for:", req.params.caseId, "User ID:", req.user.id);
+
+  if (!caseId) {
+    return res.status(400).json({ error: 'Case ID is required' });
+  }
+
+  const selectQuery = `
+    SELECT * FROM CaseDetails
+    WHERE case_id = ? AND user_id = ?
+    ORDER BY id DESC
+  `;
+
+  db.all(selectQuery, [caseId, userId], (err, rows) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'No details found for this case or case does not belong to the user' });
+    }
+    res.json(rows); // Send back the array of case details
+  });
+});
+
+app.delete('/case-detail/:detailId', authenticateJWT, async (req, res) => {
+  const { detailId } = req.params; // The ID of the detail to be deleted
+  const userId = req.user.id; // User ID from the JWT middleware
+  
+  // First, verify the detail exists and belongs to the user
+  const verifyQuery = `
+    SELECT 1 FROM CaseDetails
+    JOIN UpdateCases ON CaseDetails.case_id = UpdateCases.id
+    WHERE CaseDetails.id = ? AND UpdateCases.user_id = ?
+    LIMIT 1
+  `;
+
+  db.get(verifyQuery, [detailId, userId], (err, row) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    if (!row) {
+      return res.status(404).json({ error: 'Detail not found or not authorized to delete' });
+    }
+
+    // If verification is successful, proceed to delete the detail
+    const deleteQuery = `DELETE FROM CaseDetails WHERE id = ?`;
+
+    db.run(deleteQuery, [detailId], function(err) {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Failed to delete case detail' });
+      }
+      if (this.changes === 0) {
+        // No detail was deleted, this should not happen as we've already verified its existence
+        return res.status(404).json({ error: 'Detail not found' });
+      }
+      res.json({ message: 'Case detail deleted successfully' });
+    });
+  });
+});
+
+app.post('/opponent', authenticateJWT, async (req, res) => {
+  const { caseId, clientDesignation, opponentPartyName, lawyerName, mobileNo, emailId } = req.body;
+
+  if (!caseId) {
+    return res.status(400).json({ error: 'Case ID is required' });
+  }
+
+  // Check if the case exists and belongs to the user before adding opponent details
+  const caseExistsQuery = `SELECT 1 FROM UpdateCases WHERE id = ? AND user_id = ? LIMIT 1`;
+  const userId = req.user.id;
+
+  db.get(caseExistsQuery, [caseId, userId], (err, row) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    if (!row) {
+      return res.status(404).json({ error: 'Case not found or does not belong to the user' });
+    }
+
+    // If the case exists, insert the opponent details
+    const insertQuery = `
+      INSERT INTO OpponentDetails (case_id, clientDesignation, opponentPartyName, lawyerName, mobileNo, emailId, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    db.run(insertQuery, [caseId, clientDesignation, opponentPartyName, lawyerName, mobileNo, emailId, userId], function(err) {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Failed to add opponent details' });
+      }
+      return res.json({ message: 'Opponent details added successfully' });
+    });
+  });
+});
+
+app.get('/opponent-details/:caseId', authenticateJWT, async (req, res) => {
+  const { caseId } = req.params;
+  const userId = req.user.id; // User ID from the JWT token
+  
+  // Validate caseId is provided
+  if (!caseId) {
+    return res.status(400).json({ error: 'Case ID is required' });
+  }
+  
+  // SQL query to fetch opponent details for the specified caseId and userId
+  const selectQuery = `
+    SELECT * FROM OpponentDetails
+    WHERE case_id = ? AND user_id = ?
+    ORDER BY id DESC
+  `;
+
+  db.all(selectQuery, [caseId, userId], (err, rows) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    if (rows.length === 0) {
+      // No opponent details found for this case ID
+      return res.status(404).json({ error: 'No opponent details found for this case' });
+    }
+    // Return the fetched opponent details
+    res.json(rows);
+  });
+});
+
+app.delete('/opponent-detail/:detailId', authenticateJWT, async (req, res) => {
+  const { detailId } = req.params;
+  const userId = req.user.id; // User ID from the JWT token
+  
+  // SQL query to delete opponent detail for the specified detailId and userId
+  const deleteQuery = `
+    DELETE FROM OpponentDetails
+    WHERE id = ? AND user_id = ?
+  `;
+
+  db.run(deleteQuery, [detailId, userId], function(err) {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    if (this.changes === 0) {
+      // No opponent detail was deleted, possibly because it doesn't exist or doesn't belong to the user
+      return res.status(404).json({ error: 'Opponent detail not found or not authorized' });
+    }
+    // Successfully deleted the opponent detail
+    res.json({ message: 'Opponent detail deleted successfully' });
+  });
+});
+
+app.post('/concernedperson', authenticateJWT, async (req, res) => {
+  const { caseId, client, team, clientDesignation, opponentPartyName, lawyerName, mobileNo, emailId, type, lawyerType } = req.body;
+
+  if (!caseId) {
+    return res.status(400).json({ error: 'Case ID is required' });
+  }
+
+  const updateQuery = `
+    UPDATE UpdateCases SET
+    client = ?, team = ?, clientDesignation = ?, opponentPartyName = ?, lawyerName = ?, 
+    mobileNo = ?, emailId = ?, type = ?, lawyerType = ?
+    WHERE id = ? AND user_id = ?
+  `;
+
+  const userId = req.user.id;
+
+  db.run(
+    updateQuery,
+    [client, team, clientDesignation, opponentPartyName, lawyerName, mobileNo, emailId, type, lawyerType, caseId, userId],
+    function (err) {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      if (this.changes === 0) {
+        return res.status(404).json({ error: 'Case not found' });
+      }
+      return res.json({ message: 'Case updated successfully' });
+    }
+  );
+});
 
 
 app.get("/edit/updatecases", authenticateJWT, (req, res) => {
   const userId = req.user.id;
 
   db.all(
-    "SELECT id,title, cino, case_no, court_no_desg_name, date_last_list, date_next_list, date_of_decision, district_code, district_name, establishment_code, establishment_name, fil_no, fil_year, lcourt_no_desg_name, ldistrict_name, lestablishment_name, lpetparty_name, lresparty_name, lstate_name, ltype_name, petparty_name, note, reg_no, reg_year, resparty_name, state_code, state_name, type_name, updated FROM UpdateCases WHERE user_id = ?",
+    "SELECT id, title, cino,court, case_no,court_type, court_no_desg_name, date_last_list, date_next_list, date_of_decision, district_code, district_name, establishment_code, establishment_name, fil_no, fil_year, lcourt_no_desg_name, ldistrict_name, lestablishment_name, lpetparty_name, lresparty_name, lstate_name, ltype_name, petparty_name, note, reg_no, reg_year, resparty_name, state_code, state_name, type_name, updated, client, team, clientDesignation, opponentPartyName, lawyerName , mobileNo , emailId, type, lawyerType FROM UpdateCases WHERE user_id = ? ORDER BY id DESC",
     [userId],
     (err, updateCases) => {
       if (err) {
@@ -1815,45 +2979,98 @@ app.get('/dashboard/updatecases/download-pdf/:caseId', authenticateJWT, async (r
     // Define an HTML template for your PDF content
     // Note: Update the fields according to the UpdateCases table structure
     const template = `
-    <html>
+    <!DOCTYPE html>
+    <html lang="en">
     <head>
-      <title>Update Case Data</title>
+        <meta charset="UTF-8">
+        <title>Update Case Data</title>
+        <style>
+            body {
+                font-family: 'Arial', sans-serif;
+                background-color: #fafafa;
+                margin: 0;
+                padding: 20px;
+            }
+            table {
+                width: 100%;
+                max-width: 800px;
+                margin: 20px auto;
+                border-collapse: collapse;
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+                border-radius: 8px;
+                overflow: hidden;
+            }
+            th, td {
+                padding: 15px;
+                text-align: left;
+                border-bottom: 1px solid #ddd;
+            }
+            th {
+                background-color: #007bff;
+                color: #ffffff;
+                font-size: 16px;
+            }
+            td {
+                color: #666;
+                font-size: 14px;
+            }
+            tr:nth-child(even) {
+                background-color: #f2f2f2;
+            }
+            .table-header {
+                margin: 20px 0;
+                font-size: 24px;
+                text-align: center;
+                color: #333;
+            }
+        </style>
     </head>
     <body>
-      <h1>Update Case Data</h1>
-      
-      <p>Title: <%= title %></p>
-      <p>CNR NO: <%= cino %></p>
-      <p>Case No: <%= case_no %></p>
-      <p>Court No/Designation Name: <%= court_no_desg_name %></p>
-      <p>Date Last Listed: <%= date_last_list %></p>
-      <p>Date Next Listed: <%= date_next_list %></p>
-      <p>Date of Decision: <%= date_of_decision %></p>
-      <p>District Code: <%= district_code %></p>
-      <p>District Name: <%= district_name %></p>
-      <p>Establishment Code: <%= establishment_code %></p>
-      <p>Establishment Name: <%= establishment_name %></p>
-      <p>Filing No: <%= fil_no %></p>
-      <p>Filing Year: <%= fil_year %></p>
-      <p>Linked Court No/Designation Name: <%= lcourt_no_desg_name %></p>
-      <p>Linked District Name: <%= ldistrict_name %></p>
-      <p>Linked Establishment Name: <%= lestablishment_name %></p>
-      <p>Linked Petparty Name: <%= lpetparty_name %></p>
-      <p>Linked Resparty Name: <%= lresparty_name %></p>
-      <p>Linked State Name: <%= lstate_name %></p>
-      <p>Linked Type Name: <%= ltype_name %></p>
-      <p>Petparty Name: <%= petparty_name %></p>
-      <p>Note: <%= note %></p>
-      <p>Registration No: <%= reg_no %></p>
-      <p>Registration Year: <%= reg_year %></p>
-      <p>Resparty Name: <%= resparty_name %></p>
-      <p>State Code: <%= state_code %></p>
-      <p>State Name: <%= state_name %></p>
-      <p>Type Name: <%= type_name %></p>
-      <p>Updated: <%= updated %></p>
+    
+    <div class="table-header">Update Case Data</div>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Field</th>
+                <th>Data</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr><td>Title</td><td> <%= title %></td></tr>
+            <tr><td>CNR NO</td><td><%= cino %></td></tr>
+            <tr><td>Case No</td><td><%= case_no %></td></tr>
+            <tr><td>Court No/Designation</td><td> <%= court_no_desg_name %></td></tr>
+            <tr><td>Date Next Listed </td><td> <%= date_next_list %> </td></tr>
+            <tr><td>Date of Decision </td><td> <%= date_of_decision %> </td></tr>
+            <tr><td> District Code </td><td> <%= district_code %> </td></tr>
+            <tr><td> District Name </td><td> <%= district_name %> </td></tr>
+            <tr><td> Establishment Code </td><td> <%= establishment_code %> </td></tr>
+            <tr><td> Establishment Name </td><td>  <%= establishment_name %> </td></tr>
+            <tr><td> Filing No </td><td> <%= fil_no %> </td></tr>
+            <tr><td> Filing Year </td><td> <%= fil_year %> </td></tr>
+            <tr><td> Linked Court No/Designation Name </td><td> <%= lcourt_no_desg_name %> </td></tr>
+            <tr><td> Linked District Name </td><td> <%= ldistrict_name %> </td></tr>
+            <tr><td> Linked Establishment Name </td><td> <%= lestablishment_name %> </td></tr>
+            <tr><td> Linked Petparty Name </td><td> <%= lpetparty_name %> </td></tr>
+            <tr><td> Linked Resparty Name </td><td> <%= lresparty_name %> </td></tr>
+            <tr><td> Linked State Name </td><td>  <%= lstate_name %> </td></tr>
+            <tr><td> Linked Type Name </td><td> <%= ltype_name %>  </td></tr>
+            <tr><td> Petparty Name </td><td> <%= petparty_name %> </td></tr>
+            <tr><td> Note </td><td> <%= note %> </td></tr>
+            <tr><td> Registration No </td><td> <%= reg_no %> </td></tr>
+            <tr><td> Registration Year </td><td> <%= reg_year %> </td></tr>
+            <tr><td> Resparty Name </td><td> <%= resparty_name %> </td></tr>
+            <tr><td> State Code </td><td> <%= state_code %>  <%= state_name %></td></tr>
+            <tr><td> State Name </td><td> <%= state_name %></tr>
+            <tr><td> Type Name </td><td> <%= type_name %> </td></tr>           
+        </tbody>
+    </table>
+    
     </body>
-  </html>
-  
+    </html>
+    
+    
     `;
 
     // Compile the template with data
@@ -1881,18 +3098,20 @@ app.put('/edit/updatecases/update/:caseId', authenticateJWT, (req, res) => {
   const caseId = req.params.caseId;
   const userId = req.user.id;
   const {
-    cino, case_no, court_no_desg_name, date_last_list, date_next_list,
+    cino,court, case_no, court_no_desg_name, date_last_list, date_next_list,
     date_of_decision, district_code, district_name, establishment_code,
     establishment_name, fil_no, fil_year, lcourt_no_desg_name, ldistrict_name,
     lestablishment_name, lpetparty_name, lresparty_name, lstate_name,
     ltype_name, petparty_name, note, reg_no, reg_year, resparty_name,
-    state_code, state_name, type_name, updated
+    state_code, state_name, type_name, updated , client, team, clientDesignation,
+   opponentPartyName, lawyerName , mobileNo , emailId, type, lawyerType
   } = req.body;
 
   // Update the case in the UpdateCases table
   db.run(
-    'UPDATE UpdateCases SET cino = ?, case_no = ?, court_no_desg_name = ?, date_last_list = ?, date_next_list = ?, date_of_decision = ?, district_code = ?, district_name = ?, establishment_code = ?, establishment_name = ?, fil_no = ?, fil_year = ?, lcourt_no_desg_name = ?, ldistrict_name = ?, lestablishment_name = ?, lpetparty_name = ?, lresparty_name = ?, lstate_name = ?, ltype_name = ?, petparty_name = ?, note = ?, reg_no = ?, reg_year = ?, resparty_name = ?, state_code = ?, state_name = ?, type_name = ?, updated = ?  WHERE id = ? AND user_id = ?',
-    [cino, case_no, court_no_desg_name, date_last_list, date_next_list, date_of_decision, district_code, district_name, establishment_code, establishment_name, fil_no, fil_year, lcourt_no_desg_name, ldistrict_name, lestablishment_name, lpetparty_name, lresparty_name, lstate_name, ltype_name, petparty_name, note, reg_no, reg_year, resparty_name, state_code, state_name, type_name, updated, caseId, userId],
+    'UPDATE UpdateCases SET cino = ?,court = ?, case_no = ?, court_no_desg_name = ?, date_last_list = ?, date_next_list = ?, date_of_decision = ?, district_code = ?, district_name = ?, establishment_code = ?, establishment_name = ?, fil_no = ?, fil_year = ?, lcourt_no_desg_name = ?, ldistrict_name = ?, lestablishment_name = ?, lpetparty_name = ?, lresparty_name = ?, lstate_name = ?, ltype_name = ?, petparty_name = ?, note = ?, reg_no = ?, reg_year = ?, resparty_name = ?, state_code = ?, state_name = ?, type_name = ?, updated = ?, client = ?, team = ?, clientDesignation = ?, opponentPartyName = ?, lawyerName = ? , mobileNo = ? , emailId = ?, type = ?, lawyerType = ?  WHERE id = ? AND user_id = ?',
+    [cino, case_no, court_no_desg_name, date_last_list, date_next_list, date_of_decision, district_code, district_name, establishment_code, establishment_name, fil_no, fil_year, lcourt_no_desg_name, ldistrict_name, lestablishment_name, lpetparty_name, lresparty_name, lstate_name, ltype_name, petparty_name, note, reg_no, reg_year, resparty_name, state_code, state_name, type_name, updated, client, team, clientDesignation,
+      opponentPartyName, lawyerName , mobileNo , emailId, type, lawyerType, caseId, userId],
     (err) => {
       if (err) {
         console.error(err);
@@ -1926,6 +3145,7 @@ app.get("/edit/caseform", authenticateJWT, (req, res) => {
     }
   );
 });
+
 // get endpoint to update the case so the user can edit it 
 app.put('/edit/caseform/update/:caseId', authenticateJWT, (req, res) => {
   const caseId = req.params.caseId;
@@ -2018,37 +3238,7 @@ app.post('/caseform', authenticateJWT, async (req, res) => {
   }
 });
 
-app.post('/concernedperson', authenticateJWT, async (req, res) => {
-  const { caseId, client, team, clientDesignation, opponentPartyName, lawyerName, mobileNo, emailId, type, lawyerType } = req.body;
 
-  if (!caseId) {
-    return res.status(400).json({ error: 'Case ID is required' });
-  }
-
-  const updateQuery = `
-    UPDATE CasesForm SET
-    client = ?, team = ?, clientDesignation = ?, opponentPartyName = ?, lawyerName = ?, 
-    mobileNo = ?, emailId = ?, type = ?, lawyerType = ?
-    WHERE id = ? AND user_id = ?
-  `;
-
-  const userId = req.user.id;
-
-  db.run(
-    updateQuery,
-    [client, team, clientDesignation, opponentPartyName, lawyerName, mobileNo, emailId, type, lawyerType, caseId, userId],
-    function (err) {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Internal Server Error' });
-      }
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'Case not found' });
-      }
-      return res.json({ message: 'Case updated successfully' });
-    }
-  );
-});
 
 app.get('/caseformdata', authenticateJWT, (req, res) => {
   try {
@@ -2246,7 +3436,7 @@ app.get('/dashboard/clientform/edit', authenticateJWT, (req, res) => {
   const userId = req.user.id;
 
   db.all(
-    'SELECT id, firstName, lastName, email, mobileNo, alternateMobileNo, organizationName, organizationType, organizationWebsite, caseTitle, type, homeAddress, officeAddress, assignAlerts, assignAppointments FROM ClientForm WHERE user_id = ?',
+    'SELECT id, firstName, lastName, email, mobileNo, alternateMobileNo, organizationName, organizationType, organizationWebsite, caseTitle, type, homeAddress, officeAddress, assignAlerts, assignAppointments FROM ClientForm WHERE user_id = ? ORDER BY id DESC',
     [userId],
     (err, clientForms) => {
       if (err) {
@@ -2338,7 +3528,7 @@ app.post('/dashboard/clientform', authenticateJWT, async (req, res) => {
 app.get('/clientformdata', authenticateJWT, (req, res) => {
   try {
     const userId = req.user.id;
-    db.all('SELECT id,firstName,email,mobileNo,assignAlerts,assignAppointments FROM ClientForm WHERE user_id = ?', [userId], (err, forms) => {
+    db.all('SELECT id,firstName,lastName,email,mobileNo,assignAlerts,assignAppointments FROM ClientForm WHERE user_id = ? ORDER BY id DESC', [userId], (err, forms) => {
       if (err) {
         console.error(err);
         return res.status(500).json({ error: 'Internal Server Error' });
@@ -2426,29 +3616,83 @@ app.get('/clientformdata/download-pdf/:clientId', authenticateJWT, async (req, r
 
     // Define an HTML template for your PDF content (you can use a template engine like EJS)
     const template = `
-    <html>
+    <!DOCTYPE html>
+    <html lang="en">
     <head>
-      <title>Client Data</title>
+        <meta charset="UTF-8">
+        <title>Client Data</title>
+        <style>
+            body {
+                font-family: 'Arial', sans-serif;
+                background-color: #f0f8ff;
+                margin: 0;
+                padding: 20px;
+            }
+            table {
+                width: 100%;
+                max-width: 800px;
+                margin: 20px auto;
+                border-collapse: collapse;
+            }
+            th, td {
+                text-align: left;
+                padding: 8px;
+                font-size: 16px;
+                border: 1px solid #ddd;
+            }
+            th {
+                background-color: #007bff;
+                color: #ffffff;
+            }
+            td {
+                background-color: #e7f3fe;
+            }
+            tr:nth-child(even) td {
+                background-color: #d1e7fd;
+            }
+            .table-header {
+                background-color: #0056b3;
+                color: #ffffff;
+                padding: 10px;
+                font-size: 20px;
+                text-align: center;
+                margin-bottom: 10px;
+                border-radius: 4px;
+            }
+        </style>
     </head>
     <body>
-      <h1>Client Data</h1>
-      <p>First Name: <%= firstName %></p>
-      <p>Last Name: <%= lastName %></p>
-      <p>Email: <%= email %></p>
-      <p>Mobile No: <%= mobileNo %></p>
-      <p>Alternate Mobile No: <%= alternateMobileNo %></p>
-      <p>Organization Name: <%= organizationName %></p>
-      <p>Organization Type: <%= organizationType %></p>
-      <p>Organization Website: <%= organizationWebsite %></p>
-      <p>Case: <%= caseTitle %></p>
-      <p>Type: <%= type %></p>
-      <p>Home Address: <%= homeAddress %></p>
-      <p>Office Address: <%= officeAddress %></p>
-      <p>Assign Alerts: <%= assignAlerts %></p>
-      <p>Assign Appointments: <%= assignAppointments %></p>
-      
+    
+    <div class="table-header">Client Data</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Field</th>
+                <th>Information</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr><td>First Name</td><td><%= firstName %></td></tr>
+            <tr><td>Last Name</td><td><%= lastName %></td></tr>
+            <tr><td>Email</td><td><%= email %></td></tr>
+            <tr><td>Mobile No</td><td><%= mobileNo %></td></tr>
+            <tr><td>Alternate Mobile No</td><td><%= alternateMobileNo %></td></tr>
+            <tr><td>Organization Name</td><td><%= organizationName %></td></tr>
+            <tr><td>Organization Type</td><td><%= organizationType %></td></tr>
+            <tr><td>Organization Website</td><td><%= organizationWebsite %></td></tr>
+            <tr><td>Case</td><td><%= caseTitle %></td></tr>
+            <tr><td>Type</td><td><%= type %></td></tr>
+            <tr><td>Home Address</td><td><%= homeAddress %></td></tr>
+            <tr><td>Office Address</td><td><%= officeAddress %></td></tr>
+            <tr><td>Assign Alerts</td><td><%= assignAlerts %></td></tr>
+            <tr><td>Assign Appointments</td><td><%= assignAppointments %></td></tr>
+        </tbody>
+    </table>
+    
     </body>
-  </html>
+    </html>
+    
+
     `;
 
     // Compile the template with data
@@ -2493,9 +3737,54 @@ app.get('/dashboard/alertsform', authenticateJWT, (req, res) => {
   }
 });
 
+app.get('/api/subscription-status', authenticateJWT, (req, res) => {
+  const userId = req.user.id;
+
+  db.get( // Using db.get since we expect a single row result.
+    'SELECT trial_start_date, subscription_end_date FROM users WHERE id = ?',
+    [userId],
+    (err, user) => {
+      if (err) {
+        return res.status(500).json({ error: err.message });
+      }
+
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      // Normalize today's date to start of day for comparison
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); 
+
+      let isAccessAllowed = false;
+
+      let trialEndDate = user.trial_start_date ? new Date(user.trial_start_date) : null;
+      if (trialEndDate) {
+        trialEndDate.setDate(trialEndDate.getDate() + 15);
+        trialEndDate.setHours(0, 0, 0, 0); // Normalize trial end date
+        if (today <= trialEndDate) {
+          isAccessAllowed = true;
+        }
+      }
+
+      let subscriptionEndDate = user.subscription_end_date ? new Date(user.subscription_end_date) : null;
+      if (subscriptionEndDate) {
+        subscriptionEndDate.setHours(0, 0, 0, 0); // Normalize subscription end date
+        if (today <= subscriptionEndDate) {
+          isAccessAllowed = true;
+        }
+      }
+
+      return res.json({ isAccessAllowed });
+    }
+  );
+});
+
+
+
 
 // POST endpoint to add a new CNR form
-app.post('/cnr', authenticateJWT, async (req, res) => {
+app.post('/cnr', authenticateJWT,checkAccess, async (req, res) => {
   try {
     const { hearingCourt, caseType, caseNo, caseYear } = req.body;
     const userId = req.user.id;
@@ -2553,7 +3842,7 @@ app.get('/invoiceform/edit', authenticateJWT, (req, res) => {
   const userId = req.user.id;
 
   db.all(
-    'SELECT id, invoiceNumber, client, caseType, date, amount, taxType, taxPercentage, fullAddress, hearingDate, title, dateFrom, dateTo, expensesAmount, expensesTaxType, expensesTaxPercentage, expensesCumulativeAmount,totalAmount,CumulativeAmount, addDoc FROM InvoicesForm WHERE user_id = ?',
+    'SELECT id, invoiceNumber, client, caseType, date, amount, taxType, taxPercentage, fullAddress, hearingDate, title, dateFrom, dateTo, expensesAmount, expensesTaxType, expensesTaxPercentage, expensesCumulativeAmount,totalAmount,CumulativeAmount, addDoc FROM InvoicesForm WHERE user_id = ? ORDER BY id DESC',
     [userId],
     (err, invoicesForms) => {
       if (err) {
@@ -2696,32 +3985,106 @@ app.get('/invoiceformdata/download-pdf/:invoiceId', authenticateJWT, async (req,
 
     // Define an HTML template for your PDF content (you can use a template engine like EJS)
     const template = `
-    <html>
-<head>
-  <title>Invoice Data</title>
-</head>
-<body>
-  <h1>Invoice Data</h1>
-  <p>Title: <%= title %></p>
-  <p>Invoice Number: <%= invoiceNumber %></p>
-  <p>Date: <%= date %></p>
-  <p>Client: <%= client %></p>
-  <p>Case Type: <%= caseType %></p>
-  <p>Amount: <%= amount %></p>
-  <p>Tax Type: <%= taxType %></p>
-  <p>Tax Percentage: <%= taxPercentage %></p>
-  <p>Cumulative Amount: <%= CumulativeAmount %></p>
-  <p>Full Address: <%= fullAddress %></p>
-  <p>Date From: <%= dateFrom %></p>
-  <p>Date To: <%= dateTo %></p>
-  <p>Expenses Amount: <%= expensesAmount %></p>
-  <p>Expenses Tax Type: <%= expensesTaxType %></p>
-  <p>Expenses Tax Percentage: <%= expensesTaxPercentage %></p>
-  <p>Expenses Cumulative Amount: <%= expensesCumulativeAmount %></p>
-  <p>Total Amount with all Expenses : <%= totalAmount %></p>
-  <!-- Add more fields as needed -->
-</body>
-</html>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Invoice Data</title>
+        <style>
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                margin: 0;
+                padding: 0;
+                background-color: #f9f9f9;
+                color: #333;
+            }
+            .container {
+                max-width: 800px;
+                margin: 40px auto;
+                padding: 20px;
+                background-color: #fff;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            .header {
+                text-align: center;
+                margin-bottom: 20px;
+            }
+            .header h1 {
+                color: #444;
+                margin: 0;
+                padding: 0;
+            }
+            .taglines {
+                font-style: italic;
+                color: #888;
+                margin-bottom: 40px;
+            }
+            .invoice-header {
+                font-weight: bold;
+                color: #333;
+                border-bottom: 2px solid #ddd;
+                padding-bottom: 10px;
+                margin-bottom: 20px;
+            }
+            .invoice-data table {
+                width: 100%;
+                border-collapse: collapse;
+            }
+            .invoice-data th,
+            .invoice-data td {
+                text-align: left;
+                padding: 8px;
+            }
+            .invoice-data th {
+                background-color: #f2f2f2;
+            }
+            .invoice-data td {
+                border-bottom: 1px solid #ddd;
+            }
+            .total {
+                text-align: right;
+                margin-top: 20px;
+                font-size: 18px;
+                font-weight: bold;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>LAWFAX</h1>
+                <span class="taglines">WHERE FACTS MEET THE LAW</span>
+            </div>
+    
+            <div class="invoice-data">
+                <h2 class="invoice-header">Invoice</h2>
+                <table>
+                    <tr><th>Title:</th><td>Sample Title</td></tr>
+                    <tr><th>Invoice Number:</th><td>123456</td></tr>
+                    <tr><th>Date:</th><td>2024-01-01</td></tr>
+                    <tr><th>Client:</th><td>John Doe</td></tr>
+                    <tr><th>Case Type:</th><td>Civil</td></tr>
+                    <tr><th>Amount:</th><td>$1000</td></tr>
+                    <tr><th>Tax Type:</th><td>VAT</td></tr>
+                    <tr><th>Tax Percentage:</th><td>20%</td></tr>
+                    <tr><th>Cumulative Amount:</th><td>$1200</td></tr>
+                    <tr><th>Full Address:</th><td>123 Main St, Anytown, AN 12345</td></tr>
+                    <tr><th>Date From:</th><td>2024-01-01</td></tr>
+                    <tr><th>Date To:</th><td>2024-01-31</td></tr>
+                    <tr><th>Expenses Amount:</th><td>$200</td></tr>
+                    <tr><th>Expenses Tax Type:</th><td>VAT</td></tr>
+                    <tr><th>Expenses Tax Percentage:</th><td>20%</td></tr>
+                    <tr><th>Expenses Cumulative Amount:</th><td>$240</td></tr>
+                </table>
+                <div class="total">
+                    Total Amount with all Expenses: $1440
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    
     `;
 
     // Compile the template with data
@@ -2770,7 +4133,7 @@ app.get('/clientform', authenticateJWT, (req, res) => {
 app.get('/caseform', authenticateJWT, (req, res) => {
   try {
     const userId = req.user.id;
-    db.all('SELECT id, title, type_name FROM UpdateCases WHERE user_id = ?', [userId], (err, cases) => {
+    db.all('SELECT id, title, type_name, court_type, state_name, district_name, date_next_list FROM UpdateCases WHERE user_id = ?', [userId], (err, cases) => {
       if (err) {
         console.error(err);
         return res.status(500).json({ error: 'Internal Server Error' });
@@ -2808,7 +4171,7 @@ app.get('/dashboard/people/appointmentsdates', authenticateJWT, (req, res) => {
 
 
 //party Name form endpoints
-app.post('/partyname', authenticateJWT, async (req, res) => {
+app.post('/partyname', authenticateJWT,checkAccess, async (req, res) => {
   try {
     const { hearingCourt, partyName, caseYear } = req.body;
     const userId = req.user.id;
@@ -2827,6 +4190,20 @@ app.post('/partyname', authenticateJWT, async (req, res) => {
     console.log(error);
   }
 });
+app.post('/updateEmailNoti', authenticateJWT, checkAccess, async (req, res) => {
+  const userId = req.user.id; // Assuming `authenticateJWT` middleware adds `user` to `req`
+  const { emailNoti } = req.body; // Expected to be 1 or 0
+
+  // Update the `emailNoti` field in the `users` table for the authenticated user
+  const query = `UPDATE users SET emailNoti = ? WHERE id = ?`;
+  db.run(query, [emailNoti, userId], function(err) {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json({ message: 'Notification settings updated successfully' });
+  });
+});
+
 
 
 
@@ -2853,7 +4230,7 @@ app.post('/reviewdoc', authenticateJWT, async (req, res) => {
   }
 });
 // NOTIFICATIONS FOR ALERTS
-app.get('/dashboard/user/notifications', authenticateJWT, (req, res) => {
+app.get('/dashboard/user/notifications', authenticateJWT,checkAccess, (req, res) => {
   const userId = req.user.id;
   const currentDate = new Date();
 
@@ -2913,7 +4290,7 @@ app.put('/dashboard/user/notifications/viewed', authenticateJWT, (req, res) => {
   });
 });
 
-app.get('/dashboard/user/notifications/count', authenticateJWT, (req, res) => {
+app.get('/dashboard/user/notifications/count', authenticateJWT,checkAccess, (req, res) => {
   const userId = req.user.id;
 
   db.get(`SELECT COUNT(*) AS count FROM Notification WHERE user_id = ? AND isViewed = 0`, [userId], (err, row) => {
@@ -2925,7 +4302,7 @@ app.get('/dashboard/user/notifications/count', authenticateJWT, (req, res) => {
   });
 });
 
-app.delete('/dashboard/user/notifications/:notificationId', authenticateJWT, async (req, res) => {
+app.delete('/dashboard/user/notifications/:notificationId', authenticateJWT,checkAccess, async (req, res) => {
   try {
     const { notificationId } = req.params;
     const userId = req.user.id;
@@ -2979,7 +4356,7 @@ const runAsync = (sql, params) => new Promise((resolve, reject) => {
 });
 
 // notifications for proxy
-app.post('/proxy', authenticateJWT, async (req, res) => {
+app.post('/proxy', authenticateJWT, upload.single('caseFile'),checkAccess, async (req, res) => {
   const userId = req.user.id; // Extracting user ID from JWT authentication
 
   // Extracting data from request body
@@ -3002,6 +4379,8 @@ app.post('/proxy', authenticateJWT, async (req, res) => {
     comments
   } = req.body;
 
+  const caseFilePath = req.file ? req.file.filename : null;
+  const fileUrl = caseFilePath ? `${req.protocol}://${req.get('host')}/uploads/${caseFilePath}` : null;
   // Calculating expirationDate based on dateOfHearing
   const expirationDate = new Date(dateOfHearing).toISOString();
 
@@ -3025,8 +4404,10 @@ app.post('/proxy', authenticateJWT, async (req, res) => {
       dateOfHearing,
       comments,
       user_id,
-      expirationDate
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      expirationDate,
+      caseFile
+      
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
   try {
     // Inserting proxy form data into the database
@@ -3048,7 +4429,8 @@ app.post('/proxy', authenticateJWT, async (req, res) => {
       dateOfHearing,
       comments,
       userId,
-      expirationDate
+      expirationDate,
+      caseFilePath,
     ]);
 
     const proxyId = result.lastID; // Retrieve the last inserted ID for the proxy
@@ -3070,8 +4452,8 @@ app.post('/proxy', authenticateJWT, async (req, res) => {
         else resolve(row.name); // Assuming the user has a 'name' column
       });
     });
-    const notificationMessage = `A new proxy has been generated by ${createdByUser}. Need a ${lawyerType} lawyer with ${experience} years of experience and around ${age} years old. The hearing date is on ${dateOfHearing} in ${city}, ${zipStateProvince}.`;
-
+    const notificationMessage = `A new proxy has been generated by ${createdByUser}. Need a ${lawyerType}  having ${experience} of experience and Enrollment Year around ${courtNumber}.The Court Hearing is on ${dateOfHearing} in ${city}, ${zipStateProvince}.Case fee is ₹ ${age} only.` + (fileUrl ? ` <a  class="anchortag" href="${fileUrl}">click here to see case file</a>` : '');
+    
     // Inserting notification for each user except the creator
     for (const id of allUserIds) {
       await runAsync('INSERT INTO Notification (user_id, message, expirationDate, type, proxy_id) VALUES (?, ?, ?, ?, ?)', [
@@ -3091,14 +4473,12 @@ app.post('/proxy', authenticateJWT, async (req, res) => {
   }
 });
 
-
-
-app.get('/dashboard/user/proxy-notifications', authenticateJWT, (req, res) => {
+app.get('/dashboard/user/proxy-notifications', authenticateJWT,checkAccess, (req, res) => {
   const userId = req.user.id;
 
   // Adjusted query to exclude finalized proxies
   const query = `
-    SELECT n.id, n.message, n.expirationDate, n.proxy_id
+    SELECT n.id, n.message, n.expirationDate, n.proxy_id, pf.age
     FROM Notification n
     JOIN ProxyForm pf ON n.proxy_id = pf.id
     WHERE n.user_id = ? AND date(n.expirationDate) >= date('now') AND n.type = 'proxy' AND pf.status != 'finalized'
@@ -3112,14 +4492,11 @@ app.get('/dashboard/user/proxy-notifications', authenticateJWT, (req, res) => {
 
     return res.json(rows.map(row => ({
       ...row,
-      proxyId: row.proxy_id
+      proxyId: row.proxy_id,
+      amount: row.age
     })));
   });
 });
-
-
-
-
 
 
 app.post('/dashboard/user/accept-proxy/:proxyId', authenticateJWT, async (req, res) => {
@@ -3138,7 +4515,6 @@ app.post('/dashboard/user/accept-proxy/:proxyId', authenticateJWT, async (req, r
     const currentDate = new Date().toISOString();
     await runAsync('INSERT INTO ProxyAcceptance (proxy_id, user_id, acceptanceDate) VALUES (?, ?, ?)', [proxyId, userId, currentDate]);
     await runAsync('DELETE FROM Notification WHERE proxy_id = ? AND user_id = ?', [proxyId, userId]);
-    
 
     // Fetch user details
     const user = await getAsync('SELECT * FROM users WHERE id = ?', [userId]);
@@ -3147,7 +4523,7 @@ app.post('/dashboard/user/accept-proxy/:proxyId', authenticateJWT, async (req, r
     }
 
     // Construct the notification message
-    const notificationMessage = `${user.name} has accepted your proxy for hearing date ${proxy.dateOfHearing}.He is a ${user.lawyerType} , ${user.age} years old and having ${user.experience} years of experience. You can contact me through email-${user.username} or by mobile-${user.mobile} `;
+    const notificationMessage = `${user.name} has accepted your proxy for hearing date ${proxy.dateOfHearing}.He is a ${user.lawyerType} ,having Enrollment No-${user.age} and ${user.experience} years of experience. You can contact me through email-${user.username} or by mobile-${user.mobile} `;
 
     // Insert the notification for the proxy creator
     await runAsync('INSERT INTO Notification (user_id, message, expirationDate, type, proxy_id, acceptorId) VALUES (?, ?, ?, ?, ?, ?)', [proxy.user_id, notificationMessage, proxy.expirationDate, 'proxy-accepted', proxy.id, userId]);
@@ -3160,7 +4536,7 @@ app.post('/dashboard/user/accept-proxy/:proxyId', authenticateJWT, async (req, r
 });
 
 
-app.get('/dashboard/user/proxy-notifications-accepted', authenticateJWT, (req, res) => {
+app.get('/dashboard/user/proxy-notifications-accepted', authenticateJWT,checkAccess, (req, res) => {
   const userId = req.user.id; // Extracting user ID from JWT authentication
 
   db.all(`
@@ -3169,7 +4545,8 @@ app.get('/dashboard/user/proxy-notifications-accepted', authenticateJWT, (req, r
       n.message, 
       n.expirationDate, 
       n.proxy_id AS proxyId, 
-      n.acceptorId
+      n.acceptorId,
+      pf.age AS amount
     FROM Notification n
     JOIN ProxyForm pf ON n.proxy_id = pf.id AND pf.user_id = ?
     WHERE 
@@ -3182,14 +4559,12 @@ app.get('/dashboard/user/proxy-notifications-accepted', authenticateJWT, (req, r
       return res.status(500).json({ error: 'Internal Server Error' });
     }
 
-    res.json(rows);
+    res.json(rows.map(row => ({
+      ...row,
+      amount: row.amount // Ensure amount is correctly mapped in the response
+    })));
   });
 });
-
-
-
-
-
 
 app.post('/dashboard/user/choose-acceptor/:proxyId/:acceptorId', authenticateJWT, async (req, res) => {
   console.log("params", req.params)
@@ -3204,20 +4579,15 @@ app.post('/dashboard/user/choose-acceptor/:proxyId/:acceptorId', authenticateJWT
       return res.status(404).json({ error: 'Proxy not found or you do not have permission to finalize this proxy.' });
     }
 
-
-
     await runAsync('UPDATE ProxyForm SET paymentId = ?, payment_status = ? WHERE id = ?', [paymentId, 'successful', proxyId]);
 
     // The rest of your logic to handle acceptor choice...
     // Ensure to check if a valid acceptorId is provided and matches the expected criteria
 
-    
-
     const acceptance = await getAsync('SELECT * FROM ProxyAcceptance WHERE proxy_id = ? AND user_id = ?', [proxyId, acceptorId]);
     if (!acceptance) {
       return res.status(400).json({ error: 'The chosen acceptor does not match any proxy acceptance record.' });
     }
-
 
     // Use the promisified runAsync to update ProxyForm status to "finalized"
     const currentDate = new Date().toISOString().split('T')[0];
@@ -3244,10 +4614,9 @@ app.post('/dashboard/user/choose-acceptor/:proxyId/:acceptorId', authenticateJWT
   }
 });
 
-
 // show proxy
 // Endpoint for retrieving proxy activity for the logged-in user
-app.get('/dashboard/user/proxy-activity', authenticateJWT, (req, res) => {
+app.get('/dashboard/user/proxy-activity', authenticateJWT,checkAccess, (req, res) => {
   const userId = req.user.id;
   const currentDate = new Date().toISOString();
 
@@ -3264,7 +4633,9 @@ app.get('/dashboard/user/proxy-activity', authenticateJWT, (req, res) => {
      INNER JOIN users acceptor ON pa.acceptor_user_id = acceptor.id -- Join for acceptor
      INNER JOIN users creator ON pa.creator_user_id = creator.id -- Join for creator
      INNER JOIN ProxyForm p ON pa.proxy_id = p.id
-     WHERE pa.creator_user_id = ? AND p.expirationDate > ?`,
+     WHERE pa.creator_user_id = ? AND p.expirationDate > ?
+     ORDER BY pa.id DESC`,
+     
     [userId, currentDate],
     (err, rows) => {
       if (err) {
@@ -3294,10 +4665,8 @@ app.get('/dashboard/user/proxy-activity', authenticateJWT, (req, res) => {
   );
 });
 
-
-
 // Endpoint for deleting proxy activity for the logged-in user
-app.delete('/dashboard/user/proxy-activity/:activityId', authenticateJWT, (req, res) => {
+app.delete('/dashboard/user/proxy-activity/:activityId', authenticateJWT,checkAccess, (req, res) => {
   const userId = req.user.id;
   const activityId = req.params.activityId;
   // Check if the activity with the given ID exists and belongs to the authenticated user
@@ -3324,18 +4693,16 @@ app.delete('/dashboard/user/proxy-activity/:activityId', authenticateJWT, (req, 
   );
 });
 
-
 // count apis shown on each card in dashboard
 app.get('/casecount', authenticateJWT, (req, res) => {
   const userId = req.user.id;
-  db.get('SELECT COUNT(*) as count FROM CasesForm WHERE user_id = ?', [userId], (err, result) => {
+  db.get('SELECT COUNT(*) as count FROM UpdateCases WHERE user_id = ?', [userId], (err, result) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
     return res.json({ count: result.count });
   });
 });
-
 
 app.get('/clientcount', authenticateJWT, (req, res) => {
   const userId = req.user.id;
@@ -3346,7 +4713,6 @@ app.get('/clientcount', authenticateJWT, (req, res) => {
     return res.json({ count: result.count });
   });
 });
-
 
 app.get('/teammembercount', authenticateJWT, (req, res) => {
   const userId = req.user.id;
@@ -3415,6 +4781,10 @@ app.patch('/profile/edit/update', authenticateJWT, (req, res) => {
   if (name) {
     updateFields.push('name = ?');
     updateValues.push(name);
+
+     const newAvatarUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random&color=fff`;
+    updateFields.push('avatar_url = ?');
+    updateValues.push(newAvatarUrl);
   }
   if (mobile) {
     updateFields.push('mobile = ?');
