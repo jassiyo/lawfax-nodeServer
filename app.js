@@ -447,14 +447,16 @@ app.post('/login', (req, res) => {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
+    const newSessionId = crypto.randomBytes(20).toString('hex');
+
     const now = new Date().toISOString();
-    db.run('UPDATE users SET is_online = TRUE, last_seen = ? WHERE id = ?', [now, user.id], updateErr => {
+    db.run('UPDATE users SET current_session_id = ?, is_online = TRUE, last_seen = ? WHERE id = ?', [newSessionId,now, user.id], updateErr => {
       if (updateErr) {
         // Optionally handle error
         console.error('Failed to update user status:', updateErr.message);
       }
-      const token = jwt.sign({ id: user.id, username: user.username }, secretKey);
-      res.json({ token });
+      const token = jwt.sign({ id: user.id, username: user.username, sessionId: newSessionId }, secretKey, { expiresIn: '1h' });
+      res.json({ token, sessionId: newSessionId });
     });
   });
 });
