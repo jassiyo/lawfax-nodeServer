@@ -1472,117 +1472,6 @@ app.delete('/alerts/:alertId', authenticateJWT, async (req, res) => {
   }
 });
 
-//Download alert PDF by ID
-// app.get('/alerts/download-pdf/:alertId', authenticateJWT, async (req, res) => {
-//   try {
-//     const { alertId } = req.params;
-
-//     // Check if the alert with the given ID belongs to the authenticated user
-//     const alertData = await new Promise((resolve, reject) => {
-//       db.get(
-//         'SELECT * FROM AlertsForm WHERE id = ? AND user_id = ?',
-//         [alertId, req.user.id],
-//         (err, row) => {
-//           if (err) {
-//             reject(err);
-//           } else {
-//             resolve(row);
-//           }
-//         }
-//       );
-//     });
-
-//     if (!alertData) {
-//       return res.status(404).json({ error: 'Alert not found' });
-//     }
-
-//     // Define an HTML template for your PDF content (you can use a template engine like EJS)
-//     const template = `
-//     <!DOCTYPE html>
-//     <html lang="en">
-//     <head>
-//         <meta charset="UTF-8">
-//         <title>Alert Data</title>
-//         <style>
-//             body {
-//                 font-family: 'Times New Roman', Times, serif;
-//                 padding: 40px;
-//                 background: #fff;
-//                 color: #000;
-//                 margin: 0;
-//             }
-//             .container {
-//                 max-width: 700px;
-//                 margin: 20px auto;
-//                 border: 1px solid #ddd;
-//                 padding: 20px;
-//             }
-//             h1 {
-//                 font-size: 24px;
-//                 text-align: center;
-//                 color: #333;
-//                 margin-bottom: 30px;
-//             }
-//             p {
-//                 font-size: 16px;
-//                 margin: 10px 0 20px;
-//             }
-//             p span.label {
-//                 font-weight: bold;
-//                 display: inline-block;
-//                 min-width: 150px;
-//                 color: #555;
-//             }
-//             .footer {
-//                 text-align: center;
-//                 margin-top: 40px;
-//                 font-size: 14px;
-//                 color: #666;
-//             }
-//         </style>
-//     </head>
-//     <body>
-//         <div class="container">
-//             <h1>Alert Data</h1>
-//             <p><span class="label">Title:</span>  <%= title %></p>
-//             <p><span class="label">Case Title:</span> <%= caseTitle %></p>
-//             <p><span class="label">Case Type:</span> <%= caseType %></p>
-//             <p><span class="label">Start Date:</span> <%= startDate %></p>
-//             <p><span class="label">Completion Date:</span> <%= completionDate %></p>
-//             <p><span class="label">Assign From:</span>  <%= assignFrom %></p>
-//             <p><span class="label">Assign To:</span> <%= assignTo %></p>
-//             <!-- Add more fields as needed -->
-//             <div class="footer">
-//                 Confidential Document | [Your Company or Department Name]
-//             </div>
-//         </div>
-//     </body>
-//     </html>    
-//     `;
-
-//     // Compile the template with data
-//     const htmlContent = ejs.render(template, alertData);
-
-//     // Create a PDF from the HTML content
-//     pdf.create(htmlContent).toStream((err, stream) => {
-//       if (err) {
-//         console.error(err);
-//         return res.status(500).json({ error: 'Error generating PDF' });
-//       }
-
-//       // Set the response headers for PDF download
-//       res.setHeader('Content-Type', 'application/pdf');
-//       res.setHeader('Content-Disposition', `attachment; filename=Alert_${alertData.id}.pdf`);
-
-//       // Pipe the PDF stream to the response
-//       stream.pipe(res);
-//     });
-//   } catch (error) {
-//     console.error(error);
-//     return res.status(500).json({ error: 'Internal Server Error' });
-//   }
-// });
-
 
 app.get('/alerts/download-pdf/:alertId', authenticateJWT, async (req, res) => {
   try {
@@ -1920,17 +1809,14 @@ app.get('/dashboard/teammemberform/download-pdf/:memberId', authenticateJWT, asy
   try {
     const { memberId } = req.params;
 
-    // Check if the team member with the given ID belongs to the authenticated user
+    // Retrieve team member data from the database
     const memberData = await new Promise((resolve, reject) => {
       db.get(
         'SELECT * FROM TeamMembers WHERE id = ? AND user_id = ?',
         [memberId, req.user.id],
         (err, row) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(row);
-          }
+          if (err) reject(err);
+          else resolve(row);
         }
       );
     });
@@ -1939,9 +1825,9 @@ app.get('/dashboard/teammemberform/download-pdf/:memberId', authenticateJWT, asy
       return res.status(404).json({ error: 'Team member not found' });
     }
 
-    // Define an HTML template for your PDF content (you can use a template engine like EJS)
-    const template = `
-    <!DOCTYPE html>
+    // Define an HTML template for your PDF content
+    const htmlContent = `
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1992,40 +1878,48 @@ app.get('/dashboard/teammemberform/download-pdf/:memberId', authenticateJWT, asy
 <body>
     <div class="container">
         <h1>Team Member Data</h1>
-        <p><span>Full Name:</span> <%= fullName %></p>
-        <p><span>Email:</span> <%= email %></p>
-        <p><span>Mobile Number:</span> <%= mobileno %></p>
-        <p><span>Designation:</span> <%= designation %></p>
-        <p><span>Address:</span>  <%= address %></p>
-        <p><span>State:</span>  <%= state %></p>
-        <p><span>City:</span> <%= city %></p>
-        <p><span>Zip Code:</span> <%= zipCode %></p>
-        <p><span>Selected Group:</span>  <%= selectedGroup %></p>
+        <p><span>Full Name:</span> ${memberData.fullName}</p>
+        <p><span>Email:</span> ${memberData.email}</p>
+        <p><span>Mobile Number:</span> ${memberData.mobileno}</p>
+        <p><span>Designation:</span> ${memberData.designation}</p>
+        <p><span>Address:</span>  ${memberData.address}</p>
+        <p><span>State:</span>  ${memberData.state}</p>
+        <p><span>City:</span> ${memberData.city}</p>
+        <p><span>Zip Code:</span> ${memberData.zipCode}</p>
+        <p><span>Selected Group:</span>  ${memberData.selectedGroup}</p>
         <div class="footer">
-            © 2024 Company Name. All rights reserved.
+            © 2024 LAWFAX. All rights reserved.
         </div>
     </div>
 </body>
 </html>
     `;
 
-    // Compile the template with data
-    const htmlContent = ejs.render(template, memberData);
+    // Launch Puppeteer
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
 
-    // Create a PDF from the HTML content
-    pdf.create(htmlContent).toStream((err, stream) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Error generating PDF' });
-      }
-
-      // Set the response headers for PDF download
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=TeamMember_${memberData.id}.pdf`);
-
-      // Pipe the PDF stream to the response
-      stream.pipe(res);
+    // Set the content of the page to your HTML
+    await page.setContent(htmlContent, {
+      waitUntil: 'networkidle0'
     });
+
+    // Create a PDF buffer
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      printBackground: true
+    });
+
+    // Close the browser
+    await browser.close();
+
+    // Set the response headers for PDF download
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=TeamMember_${memberData.id}.pdf`);
+
+    // Send the PDF buffer in the response
+    res.send(pdfBuffer);
+
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: 'Internal Server Error' });
@@ -2214,7 +2108,7 @@ app.get('/billdata/download-pdf/:billId', authenticateJWT, async (req, res) => {
   try {
     const { billId } = req.params;
 
-    // Check if the bill with the given ID belongs to the authenticated user
+    // Retrieve bill data from the database
     const billData = await new Promise((resolve, reject) => {
       db.get(
         'SELECT * FROM BillForm WHERE id = ? AND user_id = ?',
@@ -2233,9 +2127,9 @@ app.get('/billdata/download-pdf/:billId', authenticateJWT, async (req, res) => {
       return res.status(404).json({ error: 'Bill not found' });
     }
 
-    // Define an HTML template for your PDF content (you can use a template engine like EJS)
-    const template = `
-    <!DOCTYPE html>
+    // Define the HTML template for your PDF content
+    const htmlContent = `
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -2257,7 +2151,7 @@ app.get('/billdata/download-pdf/:billId', authenticateJWT, async (req, res) => {
       padding: 12px;
       border: 1px solid #ddd;
       text-align: left;
-      font-size: 1rem;
+      font-size: 16px;
     }
     th {
       background-color: #007BFF;
@@ -2266,7 +2160,7 @@ app.get('/billdata/download-pdf/:billId', authenticateJWT, async (req, res) => {
     .header {
       background-color: #28a745;
       color: #fff;
-      font-size: 1.5rem;
+      font-size: 24px;
       text-align: center;
       padding: 10px 0;
       margin-bottom: 20px;
@@ -2291,94 +2185,49 @@ app.get('/billdata/download-pdf/:billId', authenticateJWT, async (req, res) => {
 <body>
   <div class="header">Bill Data</div>
   <table>
-    <tr>
-      <th>Field</th>
-      <th>Details</th>
-    </tr>
-    <tr>
-      <td>Bill Number</td>
-      <td><%= billNumber %></td>
-    </tr>
-    <tr>
-      <td>Title</td>
-      <td><%= title %></td>
-    </tr>
-    <tr>
-      <td>Current Date</td>
-      <td><%= currentDate %></td>
-    </tr>
-    <tr>
-      <td>Date From</td>
-      <td><%= dateFrom %></td>
-    </tr>
-    <tr>
-      <td>Date To</td>
-      <td><%= dateTo %></td>
-    </tr>
-    <tr>
-      <td>Full Address</td>
-      <td><%= fullAddress %></td>
-    </tr>
-    <tr>
-      <td>Billing Type</td>
-      <td><%= billingType %></td>
-    </tr>
-    <tr>
-      <td>Total Hours</td>
-      <td><%= totalHours %></td>
-    </tr>
-    <tr>
-      <td>No. of Hearings</td>
-      <td><%= noOfHearings %></td>
-    </tr>
-    <tr class="total-row">
-      <td>Total Amount</td>
-      <td><%= totalAmount %></td>
-    </tr>
-    <tr>
-      <td>Amount</td>
-      <td><%= amount %></td>
-    </tr>
-    <tr class="tax-row">
-      <td>Tax Type</td>
-      <td><%= taxType %></td>
-    </tr>
-    <tr class="tax-row">
-      <td>Tax Percentage</td>
-      <td><%= taxPercentage %></td>
-    </tr>
-    <tr class="highlight">
-      <td>Total Amount With Tax</td>
-      <td><%= totalAmountWithTax %></td>
-    </tr>
-    <tr class="description">
-      <td>Description</td>
-      <td><%= description %></td>
-    </tr>
+    <tr><th>Field</th><th>Details</th></tr>
+    <tr><td>Bill Number</td><td>${billData.billNumber}</td></tr>
+    <tr><td>Title</td><td>${billData.title}</td></tr>
+    <tr><td>Current Date</td><td>${billData.currentDate}</td></tr>
+    <tr><td>Date From</td><td>${billData.dateFrom}</td></tr>
+    <tr><td>Date To</td><td>${billData.dateTo}</td></tr>
+    <tr><td>Full Address</td><td>${billData.fullAddress}</td></tr>
+    <tr><td>Billing Type</td><td>${billData.billingType}</td></tr>
+    <tr><td>Total Hours</td><td>${billData.totalHours}</td></tr>
+    <tr><td>No. of Hearings</td><td>${billData.noOfHearings}</td></tr>
+    <tr class="total-row"><td>Total Amount</td><td>${billData.totalAmount}</td></tr>
+    <tr><td>Amount</td><td>${billData.amount}</td></tr>
+    <tr class="tax-row"><td>Tax Type</td><td>${billData.taxType}</td></tr>
+    <tr class="tax-row"><td>Tax Percentage</td><td>${billData.taxPercentage}</td></tr>
+    <tr class="highlight"><td>Total Amount With Tax</td><td>${billData.totalAmountWithTax}</td></tr>
+    <tr class="description"><td>Description</td><td>${billData.description}</td></tr>
   </table>
 </body>
 </html>
-
-
     `;
 
-    // Compile the template with data
-    const htmlContent = ejs.render(template, billData);
+    // Launch Puppeteer
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
 
-    // Create a PDF from the HTML content
-    pdf.create(htmlContent).toStream((err, stream) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Error generating PDF' });
-      }
+    // Set the HTML content for the page
+    await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
 
-      // Set the response headers for PDF download
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=Bill_${billData.id}.pdf`);
-
-      // Pipe the PDF stream to the response
-      stream.pipe(res);
+    // Generate the PDF from the page content
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      printBackground: true,
     });
+
+    // Close the browser
+    await browser.close();
+
+    // Set the response headers for PDF download
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=Bill_${billId}.pdf`);
+
+    // Send the PDF buffer in the response
+    res.send(pdfBuffer);
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: 'Internal Server Error' });
@@ -2996,7 +2845,8 @@ app.get('/dashboard/updatecases/download-pdf/:caseId', authenticateJWT, async (r
   try {
     const { caseId } = req.params;
     const userId = req.user.id;
-    // Check if the case with the given ID belongs to the authenticated user
+
+    // Retrieve case data from the database
     const caseData = await new Promise((resolve, reject) => {
       db.get(
         'SELECT * FROM UpdateCases WHERE id = ? AND user_id = ?',
@@ -3015,59 +2865,56 @@ app.get('/dashboard/updatecases/download-pdf/:caseId', authenticateJWT, async (r
       return res.status(404).json({ error: 'Case not found' });
     }
 
-    // Define an HTML template for your PDF content
-    // Note: Update the fields according to the UpdateCases table structure
-    const template = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>Update Case Data</title>
-        <style>
-            body {
-                font-family: 'Arial', sans-serif;
-                background-color: #fafafa;
-                margin: 0;
-                padding: 20px;
-            }
-            table {
-                width: 100%;
-                max-width: 800px;
-                margin: 20px auto;
-                border-collapse: collapse;
-                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-                border-radius: 8px;
-                overflow: hidden;
-            }
-            th, td {
-                padding: 15px;
-                text-align: left;
-                border-bottom: 1px solid #ddd;
-            }
-            th {
-                background-color: #007bff;
-                color: #ffffff;
-                font-size: 16px;
-            }
-            td {
-                color: #666;
-                font-size: 14px;
-            }
-            tr:nth-child(even) {
-                background-color: #f2f2f2;
-            }
-            .table-header {
-                margin: 20px 0;
-                font-size: 24px;
-                text-align: center;
-                color: #333;
-            }
-        </style>
-    </head>
-    <body>
-    
+    // Define the HTML content with the case data embedded directly
+    const htmlContent = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Update Case Data</title>
+    <style>
+    body {
+        font-family: 'Arial', sans-serif;
+        background-color: #fafafa;
+        margin: 0;
+        padding: 20px;
+    }
+    table {
+        width: 100%;
+        max-width: 800px;
+        margin: 20px auto;
+        border-collapse: collapse;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    th, td {
+        padding: 15px;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+    }
+    th {
+        background-color: #007bff;
+        color: #ffffff;
+        font-size: 16px;
+    }
+    td {
+        color: #666;
+        font-size: 14px;
+    }
+    tr:nth-child(even) {
+        background-color: #f2f2f2;
+    }
+    .table-header {
+        margin: 20px 0;
+        font-size: 24px;
+        text-align: center;
+        color: #333;
+    }
+</style>
+</head>
+<body>
     <div class="table-header">Update Case Data</div>
-    
     <table>
         <thead>
             <tr>
@@ -3076,59 +2923,57 @@ app.get('/dashboard/updatecases/download-pdf/:caseId', authenticateJWT, async (r
             </tr>
         </thead>
         <tbody>
-            <tr><td>Title</td><td> <%= title %></td></tr>
-            <tr><td>CNR NO</td><td><%= cino %></td></tr>
-            <tr><td>Case No</td><td><%= case_no %></td></tr>
-            <tr><td>Court No/Designation</td><td> <%= court_no_desg_name %></td></tr>
-            <tr><td>Date Next Listed </td><td> <%= date_next_list %> </td></tr>
-            <tr><td>Date of Decision </td><td> <%= date_of_decision %> </td></tr>
-            <tr><td> District Code </td><td> <%= district_code %> </td></tr>
-            <tr><td> District Name </td><td> <%= district_name %> </td></tr>
-            <tr><td> Establishment Code </td><td> <%= establishment_code %> </td></tr>
-            <tr><td> Establishment Name </td><td>  <%= establishment_name %> </td></tr>
-            <tr><td> Filing No </td><td> <%= fil_no %> </td></tr>
-            <tr><td> Filing Year </td><td> <%= fil_year %> </td></tr>
-            <tr><td> Linked Court No/Designation Name </td><td> <%= lcourt_no_desg_name %> </td></tr>
-            <tr><td> Linked District Name </td><td> <%= ldistrict_name %> </td></tr>
-            <tr><td> Linked Establishment Name </td><td> <%= lestablishment_name %> </td></tr>
-            <tr><td> Linked Petparty Name </td><td> <%= lpetparty_name %> </td></tr>
-            <tr><td> Linked Resparty Name </td><td> <%= lresparty_name %> </td></tr>
-            <tr><td> Linked State Name </td><td>  <%= lstate_name %> </td></tr>
-            <tr><td> Linked Type Name </td><td> <%= ltype_name %>  </td></tr>
-            <tr><td> Petparty Name </td><td> <%= petparty_name %> </td></tr>
-            <tr><td> Note </td><td> <%= note %> </td></tr>
-            <tr><td> Registration No </td><td> <%= reg_no %> </td></tr>
-            <tr><td> Registration Year </td><td> <%= reg_year %> </td></tr>
-            <tr><td> Resparty Name </td><td> <%= resparty_name %> </td></tr>
-            <tr><td> State Code </td><td> <%= state_code %>  <%= state_name %></td></tr>
-            <tr><td> State Name </td><td> <%= state_name %></tr>
-            <tr><td> Type Name </td><td> <%= type_name %> </td></tr>           
-        </tbody>
+    <tr><td>Title</td><td>${caseData.title}</td></tr>
+    <tr><td>CNR NO</td><td>${caseData.cino}</td></tr>
+    <tr><td>Case No</td><td>${caseData.case_no}</td></tr>
+    <tr><td>Court No/Designation</td><td>${caseData.court_no_desg_name}</td></tr>
+    <tr><td>Date Next Listed</td><td>${caseData.date_next_list}</td></tr>
+    <tr><td>Date of Decision</td><td>${caseData.date_of_decision}</td></tr>
+    <tr><td>District Code</td><td>${caseData.district_code}</td></tr>
+    <tr><td>District Name</td><td>${caseData.district_name}</td></tr>
+    <tr><td>Establishment Code</td><td>${caseData.establishment_code}</td></tr>
+    <tr><td>Establishment Name</td><td>${caseData.establishment_name}</td></tr>
+    <tr><td>Filing No</td><td>${caseData.fil_no}</td></tr>
+    <tr><td>Filing Year</td><td>${caseData.fil_year}</td></tr>
+    <tr><td>Petparty Name</td><td>${caseData.petparty_name}</td></tr>
+    <tr><td>Note</td><td>${caseData.note}</td></tr>
+    <tr><td>Registration No</td><td>${caseData.reg_no}</td></tr>
+    <tr><td>Registration Year</td><td>${caseData.reg_year}</td></tr>
+    <tr><td>Resparty Name</td><td>${caseData.resparty_name}</td></tr>
+    <tr><td>State Code</td><td>${caseData.state_code}</td></tr>
+    <tr><td>State Name</td><td>${caseData.state_name}</td></tr>
+    <tr><td>Type Name</td><td>${caseData.type_name}</td></tr>
+</tbody>
+
     </table>
-    
-    </body>
-    </html>
-    
-    
+</body>
+</html>
     `;
 
-    // Compile the template with data
-    const htmlContent = ejs.render(template, caseData);
+    // Launch Puppeteer
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
 
-    // Create a PDF from the HTML content
-    pdf.create(htmlContent).toStream((err, stream) => {
-      if (err) {
-        return res.status(500).json({ error: 'Error generating PDF' });
-      }
+    // Set the content of the page to the HTML
+    await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
 
-      // Set the response headers for PDF download
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=UpdateCase_${caseData.id}.pdf`);
-
-      // Pipe the PDF stream to the response
-      stream.pipe(res);
+    // Generate the PDF from the content
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      printBackground: true,
     });
+
+    // Close the browser
+    await browser.close();
+
+    // Set response headers for PDF download
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=UpdateCase_${caseId}.pdf`);
+
+    // Send the PDF buffer in the response
+    res.send(pdfBuffer);
   } catch (error) {
+    console.error(error);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -3634,7 +3479,7 @@ app.get('/clientformdata/download-pdf/:clientId', authenticateJWT, async (req, r
   try {
     const { clientId } = req.params;
 
-    // Check if the client with the given ID belongs to the authenticated user
+    // Retrieve client data from the database
     const clientData = await new Promise((resolve, reject) => {
       db.get(
         'SELECT * FROM ClientForm WHERE id = ? AND user_id = ?',
@@ -3653,104 +3498,108 @@ app.get('/clientformdata/download-pdf/:clientId', authenticateJWT, async (req, r
       return res.status(404).json({ error: 'Client not found' });
     }
 
-    // Define an HTML template for your PDF content (you can use a template engine like EJS)
-    const template = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>Client Data</title>
-        <style>
-            body {
-                font-family: 'Arial', sans-serif;
-                background-color: #f0f8ff;
-                margin: 0;
-                padding: 20px;
-            }
-            table {
-                width: 100%;
-                max-width: 800px;
-                margin: 20px auto;
-                border-collapse: collapse;
-            }
-            th, td {
-                text-align: left;
-                padding: 8px;
-                font-size: 16px;
-                border: 1px solid #ddd;
-            }
-            th {
-                background-color: #007bff;
-                color: #ffffff;
-            }
-            td {
-                background-color: #e7f3fe;
-            }
-            tr:nth-child(even) td {
-                background-color: #d1e7fd;
-            }
-            .table-header {
-                background-color: #0056b3;
-                color: #ffffff;
-                padding: 10px;
-                font-size: 20px;
-                text-align: center;
-                margin-bottom: 10px;
-                border-radius: 4px;
-            }
-        </style>
-    </head>
-    <body>
-    
-    <div class="table-header">Client Data</div>
-    <table>
-        <thead>
-            <tr>
-                <th>Field</th>
-                <th>Information</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr><td>First Name</td><td><%= firstName %></td></tr>
-            <tr><td>Last Name</td><td><%= lastName %></td></tr>
-            <tr><td>Email</td><td><%= email %></td></tr>
-            <tr><td>Mobile No</td><td><%= mobileNo %></td></tr>
-            <tr><td>Alternate Mobile No</td><td><%= alternateMobileNo %></td></tr>
-            <tr><td>Organization Name</td><td><%= organizationName %></td></tr>
-            <tr><td>Organization Type</td><td><%= organizationType %></td></tr>
-            <tr><td>Organization Website</td><td><%= organizationWebsite %></td></tr>
-            <tr><td>Case</td><td><%= caseTitle %></td></tr>
-            <tr><td>Type</td><td><%= type %></td></tr>
-            <tr><td>Home Address</td><td><%= homeAddress %></td></tr>
-            <tr><td>Office Address</td><td><%= officeAddress %></td></tr>
-            <tr><td>Assign Alerts</td><td><%= assignAlerts %></td></tr>
-            <tr><td>Assign Appointments</td><td><%= assignAppointments %></td></tr>
-        </tbody>
-    </table>
-    
-    </body>
-    </html>
-    
+    // Define the HTML content for the PDF
+    const htmlContent = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Client Data</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #f0f8ff;
+            margin: 0;
+            padding: 20px;
+        }
+        table {
+            width: 100%;
+            max-width: 800px;
+            margin: 20px auto;
+            border-collapse: collapse;
+        }
+        th, td {
+            text-align: left;
+            padding: 8px;
+            font-size: 16px;
+            border: 1px solid #ddd;
+        }
+        th {
+            background-color: #007bff;
+            color: #ffffff;
+        }
+        td {
+            background-color: #e7f3fe;
+        }
+        tr:nth-child(even) td {
+            background-color: #d1e7fd;
+        }
+        .table-header {
+            background-color: #0056b3;
+            color: #ffffff;
+            padding: 10px;
+            font-size: 20px;
+            text-align: center;
+            margin-bottom: 10px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
 
-    `;
+<div class="table-header">Client Data</div>
+<table>
+    <thead>
+        <tr>
+            <th>Field</th>
+            <th>Information</th>
+        </tr>
+    </thead>
+    <tbody>
+    <tr><td>First Name</td><td>${clientData.firstName}</td></tr>
+    <tr><td>Last Name</td><td>${clientData.lastName}</td></tr>
+    <tr><td>Email</td><td>${clientData.email}</td></tr>
+    <tr><td>Mobile No</td><td>${clientData.mobileNo}</td></tr>
+    <tr><td>Alternate Mobile No</td><td>${clientData.alternateMobileNo}</td></tr>
+    <tr><td>Organization Name</td><td>${clientData.organizationName}</td></tr>
+    <tr><td>Organization Type</td><td>${clientData.organizationType}</td></tr>
+    <tr><td>Organization Website</td><td>${clientData.organizationWebsite}</td></tr>
+    <tr><td>Case</td><td>${clientData.caseTitle}</td></tr>
+    <tr><td>Type</td><td>${clientData.type}</td></tr>
+    <tr><td>Home Address</td><td>${clientData.homeAddress}</td></tr>
+    <tr><td>Office Address</td><td>${clientData.officeAddress}</td></tr>
+    <tr><td>Assign Alerts</td><td>${clientData.assignAlerts}</td></tr>
+    <tr><td>Assign Appointments</td><td>${clientData.assignAppointments}</td></tr>
+</tbody>
 
-    // Compile the template with data
-    const htmlContent = ejs.render(template, clientData);
+</table>
 
-    // Create a PDF from the HTML content
-    pdf.create(htmlContent).toStream((err, stream) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Error generating PDF' });
-      }
+</body>
+</html>
+`;
 
-      // Set the response headers for PDF download
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=Client_${clientData.id}.pdf`);
+    // Launch Puppeteer
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
 
-      // Pipe the PDF stream to the response
-      stream.pipe(res);
+    // Set the content of the page to the HTML
+    await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+
+    // Generate the PDF from the page content
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      printBackground: true,
     });
+
+    // Close the browser
+    await browser.close();
+
+    // Set the response headers for PDF download
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=Client_${clientId}.pdf`);
+
+    // Send the PDF buffer in the response
+    res.send(pdfBuffer);
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: 'Internal Server Error' });
@@ -4003,7 +3852,7 @@ app.get('/invoiceformdata/download-pdf/:invoiceId', authenticateJWT, async (req,
   try {
     const { invoiceId } = req.params;
 
-    // Check if the invoice with the given ID belongs to the authenticated user
+    // Retrieve invoice data from the database
     const invoiceData = await new Promise((resolve, reject) => {
       db.get(
         'SELECT * FROM InvoicesForm WHERE id = ? AND user_id = ?',
@@ -4022,14 +3871,15 @@ app.get('/invoiceformdata/download-pdf/:invoiceId', authenticateJWT, async (req,
       return res.status(404).json({ error: 'Invoice not found' });
     }
 
-    // Define an HTML template for your PDF content (you can use a template engine like EJS)
-    const template = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>Invoice Data</title>
-        <style>
+    // Define the HTML content for the PDF
+    // Replace 'ejs.render' with template literals
+    const htmlContent = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Invoice Data</title>
+    <style>
             body {
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                 margin: 0;
@@ -4088,69 +3938,71 @@ app.get('/invoiceformdata/download-pdf/:invoiceId', authenticateJWT, async (req,
                 font-weight: bold;
             }
         </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>LAWFAX</h1>
-                <span class="taglines">WHERE FACTS MEET THE LAW</span>
-            </div>
-    
-            <div class="invoice-data">
-                <h2 class="invoice-header">Invoice</h2>
-                <table>
-                    <tr><th>Title:</th><td>Sample Title</td></tr>
-                    <tr><th>Invoice Number:</th><td>123456</td></tr>
-                    <tr><th>Date:</th><td>2024-01-01</td></tr>
-                    <tr><th>Client:</th><td>John Doe</td></tr>
-                    <tr><th>Case Type:</th><td>Civil</td></tr>
-                    <tr><th>Amount:</th><td>$1000</td></tr>
-                    <tr><th>Tax Type:</th><td>VAT</td></tr>
-                    <tr><th>Tax Percentage:</th><td>20%</td></tr>
-                    <tr><th>Cumulative Amount:</th><td>$1200</td></tr>
-                    <tr><th>Full Address:</th><td>123 Main St, Anytown, AN 12345</td></tr>
-                    <tr><th>Date From:</th><td>2024-01-01</td></tr>
-                    <tr><th>Date To:</th><td>2024-01-31</td></tr>
-                    <tr><th>Expenses Amount:</th><td>$200</td></tr>
-                    <tr><th>Expenses Tax Type:</th><td>VAT</td></tr>
-                    <tr><th>Expenses Tax Percentage:</th><td>20%</td></tr>
-                    <tr><th>Expenses Cumulative Amount:</th><td>$240</td></tr>
-                </table>
-                <div class="total">
-                    Total Amount with all Expenses: $1440
-                </div>
-            </div>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>LAWFAX</h1>
+            <span class="taglines">WHERE FACTS MEET THE LAW</span>
         </div>
-    </body>
-    </html>
-    
-    `;
 
-    // Compile the template with data
-    const htmlContent = ejs.render(template, invoiceData);
+        <div class="invoice-data">
+            <h2 class="invoice-header">Invoice</h2>
+            <table>
+            <tr><th>Title:</th><td>${invoiceData.title}</td></tr>
+            <tr><th>Invoice Number:</th><td>${invoiceData.invoiceNumber}</td></tr>
+            <tr><th>Date:</th><td>${invoiceData.date}</td></tr>
+            <tr><th>Client:</th><td>${invoiceData.client}</td></tr>
+            <tr><th>Case Type:</th><td>${invoiceData.caseType}</td></tr>
+            <tr><th>Amount:</th><td>$${invoiceData.amount}</td></tr>
+            <tr><th>Tax Type:</th><td>${invoiceData.taxType}</td></tr>
+            <tr><th>Tax Percentage:</th><td>${invoiceData.taxPercentage}%</td></tr>
+            <tr><th>Cumulative Amount:</th><td>$${invoiceData.CumulativeAmount}</td></tr>
+            <tr><th>Full Address:</th><td>${invoiceData.fullAddress}</td></tr>
+            <tr><th>Date From:</th><td>${invoiceData.dateFrom}</td></tr>
+            <tr><th>Date To:</th><td>${invoiceData.dateTo}</td></tr>
+            <tr><th>Expenses Amount:</th><td>$${invoiceData.expensesAmount}</td></tr>
+            <tr><th>Expenses Tax Type:</th><td>${invoiceData.expensesTaxType}</td></tr>
+            <tr><th>Expenses Tax Percentage:</th><td>${invoiceData.expensesTaxPercentage}%</td></tr>
+            <tr><th>Expenses Cumulative Amount:</th><td>$${invoiceData.expensesCumulativeAmount}</td></tr>
+            <!-- Include other invoice fields similarly -->
+        </table>
+        <div class="total">
+            Total Amount with all Expenses: $${invoiceData.totalAmount}
+        </div>
+        </div>
+    </div>
+</body>
+</html>
+`;
 
-    // Create a PDF from the HTML content
-    pdf.create(htmlContent).toStream((err, stream) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Error generating PDF' });
-      }
+    // Launch Puppeteer
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
 
-      // Set the response headers for PDF download
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=Invoice_${invoiceData.id}.pdf`);
+    // Set the content of the page to the HTML
+    await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
 
-      // Pipe the PDF stream to the response
-      stream.pipe(res);
+    // Generate the PDF from the page content
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      printBackground: true,
     });
+
+    // Close the browser
+    await browser.close();
+
+    // Set the response headers for PDF download
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=Invoice_${invoiceId}.pdf`);
+
+    // Send the PDF buffer in the response
+    res.send(pdfBuffer);
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 });
-
-
-
 
 
 app.get('/clientform', authenticateJWT, (req, res) => {
