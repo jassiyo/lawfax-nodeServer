@@ -248,6 +248,20 @@ app.use(cors({
 }));
 
 // Authentication middleware
+// function authenticateJWT(req, res, next) {
+//   const token = req.header('x-auth-token');
+//   if (!token) {
+//     return res.status(401).json({ error: 'Access denied. No token provided.' });
+//   }
+
+//   try {
+//     const decoded = jwt.verify(token, secretKey);
+//     req.user = decoded;
+//     next();
+//   } catch (ex) {
+//     res.status(400).json({ error: 'Invalid token.' });
+//   }
+// }
 function authenticateJWT(req, res, next) {
   const token = req.header('x-auth-token');
   if (!token) {
@@ -256,12 +270,21 @@ function authenticateJWT(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, secretKey);
-    req.user = decoded;
-    next();
+    db.get('SELECT current_session_id FROM users WHERE id = ?', [decoded.id], (err, row) => {
+      if (err || !row) {
+        return res.status(500).json({ error: 'Failed to validate session.' });
+      }
+      if (decoded.sessionId !== row.current_session_id) {
+        return res.status(401).json({ error: 'Your session has expired. Please log in again.' });
+      }
+      req.user = decoded;
+      next();
+    });
   } catch (ex) {
     res.status(400).json({ error: 'Invalid token.' });
   }
 }
+
 
 // for load balancer
 app.use(express.static('public'));
@@ -421,6 +444,12 @@ app.get('/verifyemail/:token', (req, res) => {
     }
     res.json({ message: 'Email verified successfully! Please log in.' });
   });
+});
+
+
+app.get('/validate-session', authenticateJWT, (req, res) => {
+  // If the middleware doesn't reject the request, the session is still valid.
+  res.json({ valid: true });
 });
 
 // Login endpoint
