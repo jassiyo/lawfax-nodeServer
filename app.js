@@ -13,6 +13,8 @@ const FormData = require('form-data');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const multer = require('multer');
+const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const path = require('path');
 // const PDFParse = require('pdf-parse');
 const PDFDocument = require('pdfkit');
@@ -34,6 +36,15 @@ const razorpayAuth = {
   password: process.env.RAZORPAY_KEY_SECRET,
 };
 
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
+
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, './Db-data/uploads'),
   filename: (req, file, cb) => {
@@ -44,6 +55,8 @@ const storage = multer.diskStorage({
 });
 
 const upload = multer({ storage: storage });
+
+
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -240,6 +253,8 @@ const checkAndSendNotifications = () => {
 // Run this function periodically
 setInterval(checkAndSendNotifications, 60000);// Example: run every 60 seconds
 
+
+app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 app.use(cors({
   origin: '*',
@@ -281,7 +296,34 @@ function authenticateJWT(req, res, next) {
       next();
     });
   } catch (ex) {
-    res.status(400).json({ error: 'Invalid token.' });
+    if (ex.name === "TokenExpiredError") {
+      return res.status(401).json({ error: 'Token expired.' });
+    } else {
+      return res.status(400).json({ error: 'Invalid token.' });
+    }
+  }
+}
+function authenticateAdminJWT(req, res, next) {
+  const token = req.header('x-auth-token'); // Or req.headers.authorization if you're using Bearer tokens
+  if (!token) {
+    
+    return res.status(401).json({ error: 'Access denied. No token provided.' });
+  }
+  // else {
+  //   return("token", token)
+  // }
+
+  try {
+    const decoded = jwt.verify(token, secretKey);
+    // Directly assign the decoded JWT payload to req.user without checking the current session ID
+    req.admin = decoded;
+    next();
+  } catch (ex) {
+    if (ex.name === "TokenExpiredError") {
+      return res.status(401).json({ error: 'Token expired.' });
+    } else {
+      return res.status(400).json({ error: 'Invalid token.' });
+    }
   }
 }
 
@@ -292,6 +334,867 @@ app.use(express.static('public'));
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', './index.html'));
 });
+
+//admin login
+app.post('/admin/login', async (req, res) => {
+  const { username, password } = req.body;
+
+  db.get('SELECT * FROM admins WHERE username = ?', [username], async (err, admin) => {
+    if (err) {
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+    if (!admin) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+
+    const validPassword = await bcrypt.compare(password, admin.hashed_password);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+
+    const token = jwt.sign(
+      { id: admin.id, username: admin.username, isAdmin: true },
+      secretKey
+     
+    );
+    console.log('admin token', token)
+
+    res.json({ token });
+  });
+});
+
+app.get('/admin/proxy-payments', authenticateAdminJWT, async (req, res) => {
+  try {
+    const query = `SELECT * FROM ProxyForm WHERE payment_status = 'successful' ORDER BY id DESC`;
+    db.all(query, [], (err, rows) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      res.json({ proxies: rows });
+    });
+  } catch (error) {
+    console.error('Error fetching proxy payments:', error);
+    res.status(500).json({ error: 'Failed to fetch proxy payments' });
+  }
+});
+app.get('/admin/updated-cases', authenticateAdminJWT, async (req, res) => {
+  try {
+    // You can customize the ORDER BY clause based on your requirements
+    const query = `SELECT * FROM UpdateCases ORDER BY id DESC`;
+    db.all(query, [], (err, rows) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      res.json({ cases: rows });
+    });
+  } catch (error) {
+    console.error('Error fetching updated cases:', error);
+    res.status(500).json({ error: 'Failed to fetch updated cases' });
+  }
+});
+
+
+app.post('/admin/proxy-payments/:id/execute-payment', authenticateAdminJWT, async (req, res) => {
+  const { id } = req.params; // Proxy ID
+  const { isAdminApproved } = req.body; // This assumes the request includes an 'isAdminApproved' field.
+
+  // First, update the admin approval status.
+  const updateApprovalQuery = `UPDATE ProxyForm SET isAdminApproved = ? WHERE id = ?`;
+  db.run(updateApprovalQuery, [isAdminApproved, id], function (err) {
+    if (err) {
+      console.error('Database error on updating admin approval:', err.message);
+      return res.status(500).json({ error: 'Internal Server Error on updating admin approval' });
+    }
+
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'Proxy not found or no change in admin approval status.' });
+    }
+
+    // Assuming admin approval update was successful, now proceed to check and execute payment.
+    db.get(`SELECT * FROM ProxyForm WHERE id = ?`, [id], (err, proxy) => {
+      if (err) {
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      if (!proxy) {
+        return res.status(404).json({ error: 'Proxy not found' });
+      }
+      if (proxy.payment_executed) {
+        return res.status(400).json({ error: 'Payment has already been executed for this proxy' });
+      }
+
+      // Determine target user and amount based on attendance
+      let targetUserId, amount;
+      if (proxy.attendance === 'A') { // Absent, refund to generator
+        targetUserId = proxy.user_id;
+        amount = parseFloat(proxy.age); // Assuming 'age' stores the fee paid by generator
+      } else if (proxy.attendance === 'P') { // Present, pay to acceptor
+        targetUserId = proxy.accepted_by_user_id;
+        amount = parseFloat(proxy.age) * 0.95; // Assuming 'age' stores the fee, and payee gets 95%
+      } else {
+        return res.status(400).json({ error: 'Invalid attendance status' });
+      }
+
+      // Update wallet balance for target user
+      db.run(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, [amount, targetUserId], function(err) {
+        if (err) {
+          return res.status(500).json({ error: 'Failed to update wallet balance' });
+        }
+        if (this.changes > 0) {
+          // After updating wallet, mark the payment as executed
+          db.run(`UPDATE ProxyForm SET payment_executed = 1 WHERE id = ?`, [id], function(err) {
+            if (err) {
+              return res.status(500).json({ error: 'Failed to mark payment as executed' });
+            }
+            res.json({ message: 'Admin approval updated and payment executed successfully.' });
+          });
+        } else {
+          res.status(404).json({ error: 'Wallet not found for user.' });
+        }
+      });
+    });
+  });
+});
+// Endpoint to update attendance
+app.post('/admin/proxy-payments/:id/update-attendance', authenticateAdminJWT, async (req, res) => {
+  const { id } = req.params;
+  const { attendance } = req.body; // New attendance status ('A' or 'P')
+
+  const updateAttendanceQuery = `UPDATE ProxyForm SET attendance = ? WHERE id = ?`;
+
+  db.run(updateAttendanceQuery, [attendance, id], function(err) {
+    if (err) {
+      console.error('Database error on updating attendance:', err.message);
+      return res.status(500).json({ error: 'Internal Server Error on updating attendance' });
+    }
+
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'Proxy not found or no change in attendance status.' });
+    }
+
+    res.json({ message: 'Attendance updated successfully.' });
+  });
+});
+
+app.get('/admin/new-users', authenticateAdminJWT, async (req, res) => {
+  try {
+    // Fetch users ordered by registration date
+    const query = `SELECT * FROM users ORDER BY registration_date DESC, id DESC`;
+    db.all(query, [], (err, users) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      
+      // Optionally, group users by registration_date here if needed
+
+      res.json({ users: users });
+    });
+  } catch (error) {
+    console.error('Error fetching new users:', error);
+    res.status(500).json({ error: 'Failed to fetch new users' });
+  }
+});
+async function getUsersByRegistrationDate(registrationDate) {
+  return new Promise((resolve, reject) => {
+    db.all("SELECT * FROM users WHERE registration_date = ?", [registrationDate], (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+app.get('/dashboard/new-users/download-pdf/:registrationDate', authenticateAdminJWT, async (req, res) => {
+  try {
+    const { registrationDate } = req.params;
+
+    // Assuming a function that retrieves users based on the registration date
+    const usersData = await getUsersByRegistrationDate(registrationDate);
+
+    if (!usersData || usersData.length === 0) {
+      return res.status(404).json({ error: 'No users found for this date' });
+    }
+
+    // HTML template for PDF
+    let htmlContent = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Users Registered on ${registrationDate}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            margin: 0;
+            background: #ffffff;
+            color: #333;
+        }
+        
+        h1 {
+          text-align: center;
+            color: #333;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>Users Registered on ${registrationDate}</h1>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Username</th>
+                <th>Mobile</th>
+            </tr>
+        </thead>
+        <tbody>`;
+
+    usersData.forEach(user => {
+      htmlContent += `
+            <tr>
+                <td>${user.id}</td>
+                <td>${user.name}</td>
+                <td>${user.username}</td>
+                <td>${user.mobile}</td>
+            </tr>`;
+    });
+
+    htmlContent += `
+        </tbody>
+    </table>
+</body>
+</html>`;
+
+    // Launch Puppeteer and generate the PDF
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
+    await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+    const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+    await browser.close();
+
+    // Set the response headers for PDF download
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=users-${registrationDate}.pdf`);
+
+    // Send the PDF buffer in the response
+    res.send(pdfBuffer);
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+app.post('/admin/update-status/:registrationDate', authenticateAdminJWT, async (req, res) => {
+  const { registrationDate } = req.params;
+  const { newStatus } = req.body; // Assuming newStatus is a boolean indicating the desired admin status
+
+  try {
+    // Update the admin_status for all users on the given registration date
+    const query = `UPDATE users SET admin_status = ? WHERE registration_date = ?`;
+    db.run(query, [newStatus, registrationDate], function(err) {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      res.json({ message: 'Admin status updated successfully for all users on ' + registrationDate });
+    });
+  } catch (error) {
+    console.error('Error updating admin status:', error);
+    res.status(500).json({ error: 'Failed to update admin status' });
+  }
+});
+
+
+
+// Example for in-memory database, adjust as necessary
+
+app.get('/admin/dashboard-counts', authenticateAdminJWT, async (req, res) => {
+  try {
+    const getQueryPromise = (query) => new Promise((resolve, reject) => {
+      db.get(query, [], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+
+    const queries = [
+      `SELECT COUNT(id) AS count FROM users`,
+      `SELECT COUNT(id) AS count FROM wallets`,
+      `SELECT COUNT(id) AS count FROM UpdateCases`,
+      `SELECT COUNT(id) AS count FROM AlertsForm`,
+      `SELECT COUNT(id) AS count FROM Appointments`,
+      `SELECT COUNT(id) AS count FROM BillForm`,
+      `SELECT COUNT(id) AS count FROM ClientForm`,
+      `SELECT COUNT(id) AS count FROM Companies`,
+      `SELECT COUNT(id) AS count FROM CourtHearing`,
+      `SELECT COUNT(id) AS count FROM GroupForm`,
+      `SELECT COUNT(id) AS count FROM ReviewDocForm`,
+      `SELECT COUNT(id) AS count FROM TeamMembers`,
+      `SELECT COUNT(id) AS count FROM chats`,
+      `SELECT COUNT(id) AS count FROM ProxyForm`,
+      `SELECT COUNT(id) AS count FROM InvoicesForm`
+    ];
+
+    const counts = await Promise.all(queries.map(query => getQueryPromise(query)));
+
+    const labels = [
+      'users', 'wallets', 'cases', 'alerts', 'appointments', 'bills', 'clients', 'companies',
+      'courtHearings', 'groups', 'reviewDocs', 'teamMembers', 'chats', 'proxies',   'invoices'
+    ];
+
+    const results = labels.reduce((acc, label, index) => {
+      acc[label] = counts[index].count;
+      return acc;
+    }, {});
+
+    res.json(results);
+  } catch (error) {
+    console.error('Error fetching dashboard counts:', error);
+    res.status(500).json({ error: 'Failed to fetch dashboard counts' });
+  }
+});
+
+
+
+
+
+
+app.get('/admin/proxy-acceptances', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM ProxyAcceptance ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ proxyAcceptances: rows });
+  });
+});
+
+app.get('/admin/alerts', authenticateAdminJWT, async (req, res) => {
+  try {
+    const query = `SELECT * FROM AlertsForm ORDER BY id DESC`;
+    db.all(query, [], (err, rows) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      res.json({ alerts: rows });
+    });
+  } catch (error) {
+    console.error('Error fetching alerts:', error);
+    res.status(500).json({ error: 'Failed to fetch alerts' });
+  }
+});
+
+app.get('/admin/appointments', authenticateAdminJWT, async (req, res) => {
+  try {
+    const query = `SELECT * FROM Appointments ORDER BY id DESC`;
+    db.all(query, [], (err, rows) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      res.json({ appointments: rows });
+    });
+  } catch (error) {
+    console.error('Error fetching appointments:', error);
+    res.status(500).json({ error: 'Failed to fetch appointments' });
+  }
+});
+
+
+app.get('/admin/bills', authenticateAdminJWT, async (req, res) => {
+  try {
+    const query = `SELECT * FROM BillForm ORDER BY id DESC`;
+    db.all(query, [], (err, rows) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      res.json({ bills: rows });
+    });
+  } catch (error) {
+    console.error('Error fetching bills:', error);
+    res.status(500).json({ error: 'Failed to fetch bills' });
+  }
+});
+app.get('/admin/clients', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM ClientForm ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ clients: rows });
+  });
+});
+app.get('/admin/groups', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM GroupForm ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ groups: rows });
+  });
+});
+
+app.get('/admin/companies', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM Companies ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ companies: rows });
+  });
+});
+
+app.get('/admin/court-hearings', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM CourtHearing ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ courtHearings: rows });
+  });
+});
+
+app.get('/admin/review-docs', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM ReviewDocForm ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ reviewDocs: rows });
+  });
+});
+
+app.get('/admin/team-members', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM TeamMembers ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ teamMembers: rows });
+  });
+});
+
+app.get('/admin/chats', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM chats ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ chats: rows });
+  });
+});
+
+app.get('/admin/wallets', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM wallets ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ wallets: rows });
+  });
+});
+app.get('/admin/invoices', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM InvoicesForm ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ invoices: rows });
+  });
+});
+
+
+
+/// particular case related
+app.get('/admin/case-files', authenticateAdminJWT, async (req, res) => {
+  try {
+    const query = `SELECT * FROM CaseFiles ORDER BY id DESC`;
+    db.all(query, [], (err, rows) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      res.json({ caseFiles: rows });
+    });
+  } catch (error) {
+    console.error('Error fetching case files:', error);
+    res.status(500).json({ error: 'Failed to fetch case files' });
+  }
+});
+app.get('/admin/notes', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM Notes ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ notes: rows });
+  });
+});
+app.get('/admin/case-details', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM CaseDetails ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ caseDetails: rows });
+  });
+});
+app.get('/admin/opponent-details', authenticateAdminJWT, async (req, res) => {
+  const query = `SELECT * FROM OpponentDetails ORDER BY id DESC`;
+  db.all(query, [], (err, rows) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+    res.json({ opponentDetails: rows });
+  });
+});
+////////
+// async function getCasesByIds(caseIds) {
+//   return new Promise((resolve, reject) => {
+//     const placeholders = caseIds.map(() => '?').join(',');
+//     db.all(`SELECT * FROM UpdateCases WHERE id IN (${placeholders})`, caseIds, (err, rows) => {
+//       if (err) reject(err);
+//       else resolve(rows);
+//     });
+//   });
+// }
+// app.get('/admin/download-selected-cases', authenticateAdminJWT, async (req, res) => {
+//   const { caseIds } = req.query; // Expecting a comma-separated list of case IDs
+
+//   if (!caseIds) {
+//     return res.status(400).send('Case IDs are required');
+//   }
+
+//   const idsArray = caseIds.split(',').map(Number);
+//   const casesData = await getCasesByIds(idsArray);
+
+//   if (casesData.length === 0) {
+//     return res.status(404).send('No cases found with the provided IDs');
+//   }
+
+//   let htmlContent = `
+// <!DOCTYPE html>
+// <html lang="en">
+// <head>
+//     <meta charset="UTF-8">
+//     <title>Selected Cases Details</title>
+//     <style>
+//         body { font-family: Arial, sans-serif; padding: 20px; margin: 0; background: #ffffff; color: #333; }
+//         h1 { text-align: center; color: #333; }
+//         table { width: 100%; border-collapse: collapse; }
+//         th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+//         th { background-color: #f2f2f2; }
+//     </style>
+// </head>
+// <body>
+//     <h1>Selected Cases Details</h1>
+//     <table>
+//         <thead>
+//         <tr>
+//         <th>Case ID</th>
+//         <th>User ID</th>
+//         <th>Court Type</th>
+//         <th>Court</th>
+//         <th>CNR No.</th>
+//         <th>Case No</th>
+//         <th>Case Type</th>
+//         <th>Title</th>
+//         <th>Court No/Desg Name</th>
+//         <th>Last Hearing Date</th>
+//         <th>Next Hearing Date</th>
+//         <th>Final Decision Date</th>
+//         <th>District Code</th>
+//         <th>District Name</th>
+//         <th>State Code</th>
+//         <th>State Name</th>
+//         <th>Specific Jurisdiction Code</th>
+//         <th>Specific Jurisdiction Name</th>
+//         <th>Petitioner</th>
+//         <th>Respondent</th>
+//         <th>Reg No</th>
+//         <th>Reg Year</th>
+//         <th>Filing No</th>
+//         <th>Filing Year</th>
+//         <th>Updated</th>
+//         <th>Client</th>
+//         <th>Team</th>
+//         <th>Client Designation</th>
+//         <th>Opponent Party Name</th>
+//         <th>Lawyer Name</th>
+//         <th>Mobile No</th>
+//         <th>Email Id</th>
+//         <th>Type</th>
+//         <th>Lawyer Type</th>
+//         <th>Case File</th>
+//         <th>Note</th>
+//     </tr>
+//         </thead>
+//         <tbody>`;
+
+//   casesData.forEach(caseDetail => {
+//     htmlContent += `
+//     <tr>
+//     <td>${caseDetail.id}</td>
+//     <td>${caseDetail.user_id}</td>
+//     <td>${caseDetail.court_type}</td>
+//     <td>${caseDetail.court}</td>
+//     <td>${caseDetail.cino}</td>
+//     <td>${caseDetail.case_no}</td>
+//     <td>${caseDetail.type_name}</td>
+//     <td>${caseDetail.title}</td>
+//     <td>${caseDetail.court_no_desg_name}</td>
+//     <td>${caseDetail.date_last_list}</td>
+//     <td>${caseDetail.date_next_list}</td>
+//     <td>${caseDetail.date_of_decision}</td>
+//     <td>${caseDetail.district_code}</td>
+//     <td>${caseDetail.district_name}</td>
+//     <td>${caseDetail.state_code}</td>
+//     <td>${caseDetail.state_name}</td>
+//     <td>${caseDetail.establishment_code}</td>
+//     <td>${caseDetail.establishment_name}</td>
+//     <td>${caseDetail.petparty_name}</td>
+//     <td>${caseDetail.resparty_name}</td>
+//     <td>${caseDetail.reg_no}</td>
+//     <td>${caseDetail.reg_year}</td>
+//     <td>${caseDetail.fil_no}</td>
+//     <td>${caseDetail.fil_year}</td>
+//     <td>${caseDetail.updated}</td>
+//     <td>${caseDetail.client}</td>
+//     <td>${caseDetail.team}</td>
+//     <td>${caseDetail.clientDesignation}</td>
+//     <td>${caseDetail.opponentPartyName}</td>
+//     <td>${caseDetail.lawyerName}</td>
+//     <td>${caseDetail.mobileNo}</td>
+//     <td>${caseDetail.emailId}</td>
+//     <td>${caseDetail.type}</td>
+//     <td>${caseDetail.lawyerType}</td>
+//     <td>${caseDetail.case_file}</td>
+//     <td>${caseDetail.note}</td>
+//     <td>${caseDetail.court}</td>
+//     <td>${caseDetail.Admin_Download_Status}</td>
+//   </tr>
+//     `;
+//   });
+
+//   htmlContent += `</tbody></table></body></html>`;
+
+//   // Launch Puppeteer and generate the PDF
+//   const browser = await puppeteer.launch();
+//   const page = await browser.newPage();
+//   await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+//   const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+//   await browser.close();
+
+//   // Set the response headers for PDF download
+//   res.setHeader('Content-Type', 'application/pdf');
+//   res.setHeader('Content-Disposition', `attachment; filename="selected_cases_details.pdf"`);
+//   res.send(pdfBuffer);
+// });
+
+async function getCasesByIds(caseIds) {
+  return new Promise((resolve, reject) => {
+    const placeholders = caseIds.map(() => '?').join(',');
+    db.all(`SELECT * FROM UpdateCases WHERE id IN (${placeholders})`, caseIds, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+app.get('/admin/download-selected-cases', authenticateAdminJWT, async (req, res) => {
+  const { caseIds } = req.query; // Expecting a comma-separated list of case IDs
+
+  if (!caseIds) {
+    return res.status(400).send('Case IDs are required');
+  }
+
+  const idsArray = caseIds.split(',').map(Number);
+  const casesData = await getCasesByIds(idsArray);
+
+  if (casesData.length === 0) {
+    return res.status(404).send('No cases found with the provided IDs');
+  }
+
+  let htmlContent = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Selected Cases Details</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; margin: 0; background: #ffffff; color: #333; }
+        h1 { text-align: center; color: #333; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+        th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <h1>Selected Cases Details</h1>
+    <table>
+        <thead>
+        <tr>
+        <th>Case ID</th>
+        <th>User ID</th>
+        <th>Court Type</th>
+        <th>Court</th>
+        <th>CNR No.</th>
+        <th>Case No</th>
+        <th>Case Type</th>
+        <th>Title</th>
+        <th>Court No/Desg Name</th>
+        <th>Last Hearing Date</th>
+        <th>Next Hearing Date</th>
+        <th>Final Decision Date</th>
+        <th>District Code</th>
+        <th>District Name</th>
+        <th>State Code</th>
+        <th>State Name</th>
+        <th>Specific Jurisdiction Code</th>
+        <th>Specific Jurisdiction Name</th>
+        <th>Petitioner</th>
+        <th>Respondent</th>
+        <th>Reg No</th>
+        <th>Reg Year</th>
+        <th>Filing No</th>
+        <th>Filing Year</th>
+        <th>Updated</th>
+        <th>Client</th>
+        <th>Team</th>
+        <th>Client Designation</th>
+        <th>Opponent Party Name</th>
+        <th>Lawyer Name</th>
+        <th>Mobile No</th>
+        <th>Email Id</th>
+        <th>Type</th>
+        <th>Lawyer Type</th>
+        
+    </tr>
+        </thead>
+        <tbody>`;
+
+  // Dynamically generate table rows based on the cases data
+  casesData.forEach(caseDetail => {
+    htmlContent += `
+    <tr>
+    <td>${caseDetail.id}</td>
+    <td>${caseDetail.user_id}</td>
+    <td>${caseDetail.court_type}</td>
+    <td>${caseDetail.court}</td>
+    <td>${caseDetail.cino}</td>
+    <td>${caseDetail.case_no}</td>
+    <td>${caseDetail.type_name}</td>
+    <td>${caseDetail.title}</td>
+    <td>${caseDetail.court_no_desg_name}</td>
+    <td>${caseDetail.date_last_list}</td>
+    <td>${caseDetail.date_next_list}</td>
+    <td>${caseDetail.date_of_decision}</td>
+    <td>${caseDetail.district_code}</td>
+    <td>${caseDetail.district_name}</td>
+    <td>${caseDetail.state_code}</td>
+    <td>${caseDetail.state_name}</td>
+    <td>${caseDetail.establishment_code}</td>
+    <td>${caseDetail.establishment_name}</td>
+    <td>${caseDetail.petparty_name}</td>
+    <td>${caseDetail.resparty_name}</td>
+    <td>${caseDetail.reg_no}</td>
+    <td>${caseDetail.reg_year}</td>
+    <td>${caseDetail.fil_no}</td>
+    <td>${caseDetail.fil_year}</td>
+    <td>${caseDetail.updated}</td>
+    <td>${caseDetail.client}</td>
+    <td>${caseDetail.team}</td>
+    <td>${caseDetail.clientDesignation}</td>
+    <td>${caseDetail.opponentPartyName}</td>
+    <td>${caseDetail.lawyerName}</td>
+    <td>${caseDetail.mobileNo}</td>
+    <td>${caseDetail.emailId}</td>
+    <td>${caseDetail.type}</td>
+    <td>${caseDetail.lawyerType}</td>
+    
+    
+  </tr>
+    `;
+  });
+
+  htmlContent += `</tbody></table></body></html>`;
+
+  // Launch Puppeteer and generate the PDF with adjusted settings for a landscape layout
+  const browser = await puppeteer.launch();
+  const page = await browser.newPage();
+  await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+  const pdfBuffer = await page.pdf({
+    format: 'A2', // or 'A3' for a larger size
+    landscape: true, // Use landscape orientation to fit more content horizontally
+    printBackground: true
+  });
+  await browser.close();
+
+  // Set the response headers for PDF download
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="selected_cases_details.pdf"`);
+  res.send(pdfBuffer);
+});
+
+
+app.post('/admin/update-cases-status', authenticateAdminJWT, async (req, res) => {
+  // Expecting caseIds as an array of case IDs and newStatus as the new status value
+  const { caseIds, newStatus } = req.body; 
+
+  if (!caseIds || caseIds.length === 0) {
+    return res.status(400).json({ error: 'Case IDs are required' });
+  }
+
+  try {
+    // Use a transaction if your DB supports it, to ensure all updates succeed or fail as one atomic operation
+    const placeholders = caseIds.map(() => '?').join(',');
+    const query = `UPDATE UpdateCases SET Admin_Download_Status = ? WHERE id IN (${placeholders})`;
+
+    // Assuming db.run can be promisified or using a library that supports promises
+    // Adjust based on your specific database library's syntax
+    await db.run(query, [newStatus, ...caseIds], function(err) {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      res.json({ message: `Admin download status updated successfully for selected cases.` });
+    });
+  } catch (error) {
+    console.error('Error updating cases status:', error);
+    res.status(500).json({ error: 'Failed to update cases status' });
+  }
+});
+
+
+
 
 
 // Registration endpoint
@@ -309,7 +1212,7 @@ app.post('/register', async (req, res) => {
     const emailVerificationToken = crypto.randomBytes(20).toString('hex');
     const trialStartDate = new Date().toISOString().split('T')[0];
 
-    db.run('INSERT INTO users (name, lawyerType, experience, age, mobile, username, hashed_password, avatar_url, email_verification_token, trial_start_date) VALUES (?,?,?,?,?,?, ?, ?, ?, ?)',
+    db.run('INSERT INTO users (name, lawyerType, experience, age, mobile, username, hashed_password, avatar_url, email_verification_token, trial_start_date, registration_date) VALUES (?,?,?,?,?,?, ?, ?, ?, ?, DATE("now"))',
       [name, lawyerType, experience, age, mobile, username, hashedPassword, avatarUrl, emailVerificationToken, trialStartDate], function (err) {
         if (err) {
           return res.status(500).json({ error: err.message });
@@ -484,9 +1387,12 @@ app.post('/login', (req, res) => {
         // Optionally handle error
         console.error('Failed to update user status:', updateErr.message);
       }
-      const token = jwt.sign({ id: user.id, username: user.username, sessionId: newSessionId }, secretKey, { expiresIn: '1h' });
+      const token = jwt.sign({ id: user.id, username: user.username, sessionId: newSessionId }, secretKey);
+      // Respond with the token and session ID
       res.json({ token, sessionId: newSessionId });
+      console.log('user token', token)
     });
+    
   });
 });
 
@@ -756,6 +1662,31 @@ app.get('/suggestions', (req, res, next) => {
     res.json(suggestions);
   });
 });
+
+
+//chatbot code
+app.get('/generate-presigned-url', authenticateJWT, async (req, res) => {
+  const { fileName } = req.query;
+  console.log('Generating pre-signed URL for:', fileName);
+
+  const command = new PutObjectCommand({
+    Bucket: process.env.AWS_BUCKET_NAME,
+    Key: fileName,
+    ContentType: 'application/pdf',
+    // ACL: 'public-read',
+  });
+
+  try {
+    const url = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+    console.log('Pre-signed URL generated successfully:', url);
+    res.json({ url });
+  } catch (error) {
+    console.error('Error generating pre-signed URL:', error);
+    res.status(500).send('Error generating pre-signed URL');
+  }
+});
+
+
 
 
 //advocate form
@@ -4266,6 +5197,22 @@ const getAsync = (sql, params) => new Promise((resolve, reject) => {
     else resolve(row);
   });
 });
+// Assuming you're using the sqlite3 library and have a db object
+const getCaseIdByTitle = async (caseTitle) => {
+  console.log("Looking up ID for caseTitle:", caseTitle);
+  return new Promise((resolve, reject) => {
+    db.get("SELECT id FROM UpdateCases WHERE title = ?", [caseTitle], (err, row) => {
+      if (err) {
+        console.error("Database error in getCaseIdByTitle:", err);
+        reject(err);
+      } else {
+        console.log("Found caseId:", row ? row.id : "No matching case found");
+        resolve(row ? row.id : null);
+      }
+    });
+  });
+};
+
 
 // Promisified run method
 const runAsync = (sql, params) => new Promise((resolve, reject) => {
@@ -4277,8 +5224,10 @@ const runAsync = (sql, params) => new Promise((resolve, reject) => {
 
 // notifications for proxy
 app.post('/proxy', authenticateJWT, upload.single('caseFile'), checkAccess, async (req, res) => {
-  const userId = req.user.id; // Extracting user ID from JWT authentication
+  console.log("Request body:", req.body);
 
+  const userId = req.user.id; // Extracting user ID from JWT authentication
+  
   // Extracting data from request body
   const {
     lawyerType,
@@ -4296,8 +5245,12 @@ app.post('/proxy', authenticateJWT, upload.single('caseFile'), checkAccess, asyn
     type,
     timeOfHearing,
     dateOfHearing,
-    comments
+    comments,
+   
   } = req.body;
+
+  const caseId = Array.isArray(req.body.caseId) ? req.body.caseId[0] : req.body.caseId;
+  console.log("Received caseId:", caseId);
 
   const caseFilePath = req.file ? req.file.filename : null;
   const fileUrl = caseFilePath ? `${req.protocol}://${req.get('host')}/uploads/${caseFilePath}` : null;
@@ -4325,9 +5278,10 @@ app.post('/proxy', authenticateJWT, upload.single('caseFile'), checkAccess, asyn
       comments,
       user_id,
       expirationDate,
-      caseFile
-      
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      caseFile,
+      caseId
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? , ?)`;
+    console.log("Inserting with caseId:", caseId);
 
   try {
     // Inserting proxy form data into the database
@@ -4351,8 +5305,9 @@ app.post('/proxy', authenticateJWT, upload.single('caseFile'), checkAccess, asyn
       userId,
       expirationDate,
       caseFilePath,
+      caseId,
     ]);
-
+    console.log("Received caseId:", caseId);
     const proxyId = result.lastID; // Retrieve the last inserted ID for the proxy
 
     console.log('Proxy form data inserted successfully. Proxy ID:', proxyId);
